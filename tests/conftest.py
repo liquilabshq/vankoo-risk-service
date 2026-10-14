@@ -10,3 +10,4 @@ import os
 os.environ["DATABASE_URL"] = "postgresql+asyncpg://test:test@localhost:1/test"
 os.environ["KAFKA_CONSUMER_ENABLED"] = "false"
 os.environ["INVESTMENT_DELIVERY_ENABLED"] = "false"
+os.environ["REGISTRY_REFRESH_ENABLED"] = "false"

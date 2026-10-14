@@ -31,9 +31,18 @@ async def test_reads_the_assessment_of_an_auction(sut: ServiceUnderTest, client:
     assert response.status_code == 200
     body = response.json()
     assert body["assessment_id"].startswith("risk-")
-    assert body["risk_grade"] in {"A", "B", "C"}
-    assert body["provisional"] is True
-    assert body["grading_policy"] == "provisional-hash-v0"
+    assert body["eligible"] is True
+    assert body["risk_grade"] == "B"
+    assert body["score"] == 60
+    assert body["provisional"] is False
+    assert body["grading_policy"] == "points-v1"
+    assert {factor["code"] for factor in body["factors"]} == {
+        "DOMICILE_FOUND",
+        "COMPANY",
+        "NAME_MATCHES",
+        "TERM_61_TO_90_DAYS",
+    }
+    assert body["rejection_code"] is None
     assert body["delivery_status"] == "PENDING"
     assert body["invoice_amount"] == "10000.00"
 

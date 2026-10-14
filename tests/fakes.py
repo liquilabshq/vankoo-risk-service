@@ -2,8 +2,9 @@
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
-from typing import Any
+from typing import Any, cast
 
+from assessments.application.acl import ExternalRegistriesService
 from assessments.application.outbound_services import (
     AuctionEvaluationService,
     EvaluationOutcome,
@@ -12,8 +13,20 @@ from assessments.application.outbound_services import (
 from assessments.application.services import RiskAssessmentApplicationService
 from assessments.domain.entities import RiskAssessment
 from assessments.domain.repositories import RiskAssessmentRepository
-from assessments.domain.services import ProvisionalHashGradePolicy
-from assessments.domain.value_objects import AuctionFacts, AuctionId, Currency, DeliveryStatus, Money, Payer, Ruc
+from assessments.domain.services import PointsGradingPolicy
+from assessments.domain.value_objects import (
+    AuctionFacts,
+    AuctionId,
+    Currency,
+    DeliveryStatus,
+    GradingDecision,
+    Money,
+    Payer,
+    RiskGrade,
+    Ruc,
+    ScoreFactor,
+)
+from registries.interfaces.acl import PayerStandingRecord
 from shared.application.events import EventBus
 from shared.application.messaging import Inbox
 
@@ -93,7 +106,7 @@ class FakeUnitOfWork:
 
 @dataclass
 class StubEvaluationService(AuctionEvaluationService):
-    """Answers each submission with the next scripted outcome, or raises it."""
+    """Answers each delivery with the next scripted outcome, or raises it."""
 
     outcomes: list[EvaluationOutcome | InvestmentUnavailableError] = field(default_factory=list)
     calls: list[dict[str, object]] = field(default_factory=list)
@@ -107,8 +120,9 @@ class StubEvaluationService(AuctionEvaluationService):
         full_balance_outstanding: bool,
         assessed_at: datetime,
     ) -> EvaluationOutcome:
-        self.calls.append(
+        return self._answer(
             {
+                "kind": "evaluation",
                 "auction_id": auction_id,
                 "assessment_id": assessment_id,
                 "risk_grade": risk_grade,
@@ -116,10 +130,55 @@ class StubEvaluationService(AuctionEvaluationService):
                 "assessed_at": assessed_at,
             }
         )
+
+    async def reject(
+        self,
+        *,
+        auction_id: str,
+        assessment_id: str,
+        reason_code: str,
+        reason: str,
+        assessed_at: datetime,
+    ) -> EvaluationOutcome:
+        return self._answer(
+            {
+                "kind": "rejection",
+                "auction_id": auction_id,
+                "assessment_id": assessment_id,
+                "reason_code": reason_code,
+                "reason": reason,
+                "assessed_at": assessed_at,
+            }
+        )
+
+    def _answer(self, call: dict[str, object]) -> EvaluationOutcome:
+        self.calls.append(call)
         outcome = self.outcomes.pop(0)
         if isinstance(outcome, InvestmentUnavailableError):
             raise outcome
         return outcome
+
+
+ACTIVE_COMPANY = PayerStandingRecord(
+    registry_loaded=True,
+    found=True,
+    name="PAGADOR SOCIEDAD ANONIMA CERRADA",
+    status="ACTIVO",
+    domicile_condition="HABIDO",
+    ubigeo="150101",
+)
+
+
+class FakeRegistriesFacade:
+    """Answers every payer with the same standing; stands in for the Registries facade."""
+
+    def __init__(self, standing: PayerStandingRecord = ACTIVE_COMPANY) -> None:
+        self.standing = standing
+        self.asked: list[str] = []
+
+    async def payer_standing(self, ruc: str) -> PayerStandingRecord:
+        self.asked.append(ruc)
+        return self.standing
 
 
 class Clock:
@@ -144,22 +203,45 @@ class ServiceUnderTest:
     inbox: InMemoryInbox
     unit_of_work: FakeUnitOfWork
     evaluations: StubEvaluationService
+    registries: FakeRegistriesFacade
     event_bus: EventBus
     clock: Clock
 
 
-def build_service(evaluations: StubEvaluationService | None = None) -> ServiceUnderTest:
-    """Wire the application service to fresh fakes and the provisional policy."""
+def build_service(
+    evaluations: StubEvaluationService | None = None, standing: PayerStandingRecord = ACTIVE_COMPANY
+) -> ServiceUnderTest:
+    """Wire the application service to fresh fakes and the points policy."""
     repository = InMemoryRiskAssessmentRepository()
     inbox = InMemoryInbox()
     unit_of_work = FakeUnitOfWork()
     stub = evaluations or StubEvaluationService()
+    registries = FakeRegistriesFacade(standing)
     bus = EventBus()
     clock = Clock()
     service = RiskAssessmentApplicationService(
-        repository, inbox, stub, ProvisionalHashGradePolicy(), unit_of_work, bus, clock
+        repository,
+        inbox,
+        ExternalRegistriesService(cast(Any, registries)),
+        stub,
+        PointsGradingPolicy(),
+        unit_of_work,
+        bus,
+        clock,
     )
-    return ServiceUnderTest(service, repository, inbox, unit_of_work, stub, bus, clock)
+    return ServiceUnderTest(service, repository, inbox, unit_of_work, stub, registries, bus, clock)
+
+
+def graded(grade: RiskGrade = RiskGrade.B) -> GradingDecision:
+    """An eligible decision with one factor."""
+    return GradingDecision(
+        eligible=True,
+        grade=grade,
+        score=60,
+        factors=(ScoreFactor("DOMICILE_FOUND", 10, "Domicilio fiscal HABIDO en SUNAT."),),
+        full_balance_outstanding=True,
+        policy_version="points-v1",
+    )
 
 
 def auction_created(**overrides: Any) -> dict[str, Any]:

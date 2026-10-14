@@ -73,4 +73,28 @@ def test_auction_facts_require_invoice_and_mype() -> None:
 
 def test_grading_decision_names_its_policy() -> None:
     with pytest.raises(DomainError):
-        GradingDecision(grade=RiskGrade.A, full_balance_outstanding=True, policy_version=" ", provisional=False)
+        GradingDecision(
+            eligible=True, grade=RiskGrade.A, score=80, factors=(), full_balance_outstanding=True, policy_version=" "
+        )
+
+
+def test_a_decision_is_either_graded_or_rejected() -> None:
+    with pytest.raises(DomainError):
+        GradingDecision(
+            eligible=True, grade=None, score=None, factors=(), full_balance_outstanding=True, policy_version="v"
+        )
+    with pytest.raises(DomainError):
+        GradingDecision(
+            eligible=False, grade=None, score=None, factors=(), full_balance_outstanding=True, policy_version="v"
+        )
+    rejected = GradingDecision(
+        eligible=False,
+        grade=None,
+        score=None,
+        factors=(),
+        full_balance_outstanding=True,
+        policy_version="v",
+        rejection_code="PAYER_NOT_ACTIVE",
+        rejection_reason="Baja de oficio",
+    )
+    assert rejected.grade is None
