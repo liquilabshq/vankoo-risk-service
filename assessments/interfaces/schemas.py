@@ -8,11 +8,22 @@ from assessments.domain.entities import RiskAssessment
 from assessments.domain.value_objects import Currency, DeliveryStatus, RiskGrade
 
 
+class ScoreFactorResponse(BaseModel):
+    """One reason behind a decision, and how much it weighed."""
+
+    code: str
+    points: int
+    detail: str
+
+
 class RiskAssessmentResponse(BaseModel):
     """A risk assessment as the API returns it.
 
-    ``provisional`` is true while the grade comes from the stand-in policy and
-    says nothing about the payer.
+    ``eligible`` says whether the invoice can be funded; if it can,
+    ``risk_grade`` and ``score`` say how risky it is, and if it cannot,
+    ``rejection_code`` and ``rejection_reason`` say why. ``factors`` lists
+    every reason behind the decision. ``provisional`` is true only for the
+    assessments of phase 1, graded by a stand-in that did not look at the payer.
     """
 
     assessment_id: str
@@ -25,7 +36,12 @@ class RiskAssessmentResponse(BaseModel):
     invoice_amount: Decimal
     currency: Currency
     green_certified: bool
-    risk_grade: RiskGrade
+    eligible: bool
+    risk_grade: RiskGrade | None
+    score: int | None
+    factors: list[ScoreFactorResponse]
+    rejection_code: str | None
+    rejection_reason: str | None
     full_balance_outstanding: bool
     grading_policy: str
     provisional: bool
@@ -59,7 +75,15 @@ class RiskAssessmentResponse(BaseModel):
             invoice_amount=facts.invoice_amount.amount,
             currency=facts.invoice_amount.currency,
             green_certified=facts.green_certified,
+            eligible=assessment.eligible,
             risk_grade=assessment.grade,
+            score=assessment.decision.score,
+            factors=[
+                ScoreFactorResponse(code=factor.code, points=factor.points, detail=factor.detail)
+                for factor in assessment.decision.factors
+            ],
+            rejection_code=assessment.decision.rejection_code,
+            rejection_reason=assessment.decision.rejection_reason,
             full_balance_outstanding=assessment.decision.full_balance_outstanding,
             grading_policy=assessment.decision.policy_version,
             provisional=assessment.decision.provisional,

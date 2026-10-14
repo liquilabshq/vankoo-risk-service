@@ -75,3 +75,32 @@ async def test_connection_failures_are_retried() -> None:
 
 def test_instants_are_written_in_utc_with_milliseconds() -> None:
     assert format_instant(ASSESSED_AT) == "2026-10-14T18:00:00.123Z"
+
+
+async def test_sends_a_rejection_to_its_own_endpoint() -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json={"auctionId": "auction-1", "status": "REJECTED"})
+
+    async with httpx.AsyncClient(base_url="http://investment", transport=httpx.MockTransport(handler)) as client:
+        outcome = await HttpxAuctionEvaluationService(client).reject(
+            auction_id="auction-1",
+            assessment_id="risk-1",
+            reason_code="PAYER_NOT_ACTIVE",
+            reason="El pagador figura en SUNAT con estado «BAJA DE OFICIO»",
+            assessed_at=ASSESSED_AT,
+        )
+
+    [request] = seen
+    assert request.method == "POST"
+    assert request.url.path == "/api/v1/internal/auctions/auction-1/rejection"
+    assert json.loads(request.content) == {
+        "assessmentId": "risk-1",
+        "reasonCode": "PAYER_NOT_ACTIVE",
+        "reason": "El pagador figura en SUNAT con estado «BAJA DE OFICIO»",
+        "assessedAt": "2026-10-14T18:00:00.123Z",
+    }
+    assert outcome.kind is EvaluationOutcomeKind.ACCEPTED
+    assert outcome.auction_status == "REJECTED"

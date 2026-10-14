@@ -38,7 +38,7 @@ class InvestmentUnavailableError(Exception):
 
 
 class AuctionEvaluationService(ABC):
-    """Delivers a grade to the auction it was given to, in Investment."""
+    """Delivers a decision to the auction it was made about, in Investment."""
 
     @abstractmethod
     async def submit(
@@ -61,6 +61,35 @@ class AuctionEvaluationService(ABC):
             risk_grade (str): ``A``, ``B`` or ``C``.
             full_balance_outstanding (bool): Whether the invoice is fully owed.
             assessed_at (datetime): When the grade was decided, in UTC.
+
+        Returns:
+            EvaluationOutcome: Investment's final answer.
+
+        Raises:
+            InvestmentUnavailableError: If Investment could not give a final answer.
+        """
+
+    @abstractmethod
+    async def reject(
+        self,
+        *,
+        auction_id: str,
+        assessment_id: str,
+        reason_code: str,
+        reason: str,
+        assessed_at: datetime,
+    ) -> EvaluationOutcome:
+        """Tell Investment the invoice is not eligible, so the auction is rejected.
+
+        Sending the same rejection again is safe: Investment ignores an
+        assessment id it already applied with the same reason code.
+
+        Args:
+            auction_id (str): The auction being rejected.
+            assessment_id (str): The assessment's identifier.
+            reason_code (str): Why, as a stable code, e.g. ``PAYER_NOT_ACTIVE``.
+            reason (str): Why, in words the MYPE can read.
+            assessed_at (datetime): When the decision was made, in UTC.
 
         Returns:
             EvaluationOutcome: Investment's final answer.

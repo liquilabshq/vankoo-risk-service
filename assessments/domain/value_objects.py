@@ -212,29 +212,87 @@ class AuctionFacts:
 
 
 @dataclass(frozen=True, slots=True)
+class PayerStanding:
+    """What SUNAT's registries say about the payer of an invoice.
+
+    Attributes:
+        registry_loaded (bool): Whether the padrón was ever loaded. If not, the
+            other fields say nothing about the payer.
+        found (bool): Whether the payer's RUC is in the padrón.
+        name (str | None): The payer's registered name.
+        status (str | None): Its taxpayer status, e.g. ``ACTIVO`` or ``BAJA DE OFICIO``.
+        domicile_condition (str | None): Its fiscal address condition, e.g. ``HABIDO``.
+        ubigeo (str | None): Its district code.
+        withholding_agent (bool): SUNAT designated it IGV withholding agent.
+        perception_agent (bool): SUNAT designated it IGV perception agent.
+    """
+
+    registry_loaded: bool
+    found: bool
+    name: str | None = None
+    status: str | None = None
+    domicile_condition: str | None = None
+    ubigeo: str | None = None
+    withholding_agent: bool = False
+    perception_agent: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class ScoreFactor:
+    """One reason behind a grade, and how much it weighed.
+
+    Attributes:
+        code (str): A stable code, e.g. ``WITHHOLDING_AGENT``.
+        points (int): What it added to or took from the score.
+        detail (str): The reason in words, for the people reading the assessment.
+    """
+
+    code: str
+    points: int
+    detail: str
+
+
+@dataclass(frozen=True, slots=True)
 class GradingDecision:
     """What a grading policy concluded about an auction.
 
+    An eligible decision carries a grade; a decision that is not eligible
+    carries the code and the reason of the rejection instead.
+
     Attributes:
-        grade (RiskGrade): The risk class.
+        eligible (bool): Whether the invoice can be funded at all.
+        grade (RiskGrade | None): The risk class, when it is eligible.
+        score (int | None): The points the grade came from, when there are any.
+        factors (tuple[ScoreFactor, ...]): Every reason behind the decision.
         full_balance_outstanding (bool): Whether the invoice's whole balance is
             still owed; Investment only accepts auctions where it is.
-        policy_version (str): Which policy decided, so a stored assessment says
-            how it was graded.
+        policy_version (str): Which policy decided.
         provisional (bool): Whether the policy is a stand-in, not a real
             assessment of the payer.
+        rejection_code (str | None): Why it is not eligible, as a stable code.
+        rejection_reason (str | None): Why it is not eligible, in words.
     """
 
-    grade: RiskGrade
+    eligible: bool
+    grade: RiskGrade | None
+    score: int | None
+    factors: tuple[ScoreFactor, ...]
     full_balance_outstanding: bool
     policy_version: str
-    provisional: bool
+    provisional: bool = False
+    rejection_code: str | None = None
+    rejection_reason: str | None = None
 
     def __post_init__(self) -> None:
-        """Reject a decision that does not say which policy made it.
+        """Keep a decision either graded or rejected, never both or neither.
 
         Raises:
-            DomainError: If the policy version is blank.
+            DomainError: If the policy is not named, an eligible decision has no
+                grade, or a rejection has no code and reason.
         """
         if not self.policy_version.strip():
             raise DomainError("A grading decision must name the policy that made it")
+        if self.eligible and self.grade is None:
+            raise DomainError("An eligible decision must carry a grade")
+        if not self.eligible and (self.grade is not None or not self.rejection_code or not self.rejection_reason):
+            raise DomainError("A rejection carries a code and a reason, and no grade")

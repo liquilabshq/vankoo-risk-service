@@ -5,17 +5,13 @@ import pytest
 
 from assessments.domain.entities import RiskAssessment
 from assessments.domain.events import RiskAssessmentIssued
-from assessments.domain.services import ProvisionalHashGradePolicy
 from assessments.domain.value_objects import AssessmentId, DeliveryStatus
 from shared.domain.exceptions import ConflictError, DomainError
-from tests.fakes import NOW, facts
+from tests.fakes import NOW, facts, graded
 
 
 def issue(now: datetime = NOW) -> RiskAssessment:
-    auction = facts()
-    return RiskAssessment.issue(
-        AssessmentId("risk-1"), auction, ProvisionalHashGradePolicy().grade(auction), "event-1", now
-    )
+    return RiskAssessment.issue(AssessmentId("risk-1"), facts(), graded(), "event-1", now)
 
 
 def test_issue_schedules_delivery_now_and_records_the_event() -> None:
@@ -27,7 +23,7 @@ def test_issue_schedules_delivery_now_and_records_the_event() -> None:
     assert isinstance(event, RiskAssessmentIssued)
     assert event.auction_id == assessment.facts.auction_id.value
     assert event.assessment_id == "risk-1"
-    assert event.risk_grade == assessment.grade.value
+    assert event.risk_grade == "B"
 
 
 def test_issue_requires_a_time_zone() -> None:

@@ -1,11 +1,14 @@
-"""HTTP adapter that delivers grades to the Investment service.
+"""HTTP adapter that delivers decisions to the Investment service.
 
-It calls ``PUT /api/v1/internal/auctions/{auctionId}/evaluation`` directly on
-Investment (the gateway does not route ``/internal``) and translates the
+It calls ``PUT /api/v1/internal/auctions/{auctionId}/evaluation`` for a grade
+and ``POST /api/v1/internal/auctions/{auctionId}/rejection`` for an invoice
+that is not eligible, directly on Investment (the gateway does not route
+``/internal``), and translates the
 answer into what the application layer understands. The one ``AsyncClient``
 of the process is created in the lifespan and shared; this class never closes it.
 """
 import logging
+from collections.abc import Mapping
 from datetime import UTC, datetime
 
 import httpx
@@ -20,6 +23,7 @@ from assessments.application.outbound_services import (
 logger = logging.getLogger(__name__)
 
 EVALUATION_PATH = "/api/v1/internal/auctions/{auction_id}/evaluation"
+REJECTION_PATH = "/api/v1/internal/auctions/{auction_id}/rejection"
 MESSAGE_MAX_LENGTH = 500
 
 # Investment answers these when the evaluation can never succeed: the auction
@@ -29,7 +33,7 @@ FINAL_REFUSALS = {httpx.codes.BAD_REQUEST, httpx.codes.NOT_FOUND, httpx.codes.CO
 
 
 class HttpxAuctionEvaluationService(AuctionEvaluationService):
-    """Delivers grades to Investment over HTTP."""
+    """Delivers decisions to Investment over HTTP."""
 
     def __init__(self, client: httpx.AsyncClient) -> None:
         """Initialize the adapter on the process-wide client.
@@ -54,8 +58,28 @@ class HttpxAuctionEvaluationService(AuctionEvaluationService):
             "fullBalanceOutstanding": full_balance_outstanding,
             "assessedAt": format_instant(assessed_at),
         }
+        return await self._send("PUT", EVALUATION_PATH.format(auction_id=auction_id), body, auction_id)
+
+    async def reject(
+        self,
+        *,
+        auction_id: str,
+        assessment_id: str,
+        reason_code: str,
+        reason: str,
+        assessed_at: datetime,
+    ) -> EvaluationOutcome:
+        body = {
+            "assessmentId": assessment_id,
+            "reasonCode": reason_code,
+            "reason": reason[:MESSAGE_MAX_LENGTH],
+            "assessedAt": format_instant(assessed_at),
+        }
+        return await self._send("POST", REJECTION_PATH.format(auction_id=auction_id), body, auction_id)
+
+    async def _send(self, method: str, path: str, body: Mapping[str, object], auction_id: str) -> EvaluationOutcome:
         try:
-            response = await self._client.put(EVALUATION_PATH.format(auction_id=auction_id), json=body)
+            response = await self._client.request(method, path, json=body)
         except httpx.HTTPError as error:
             raise InvestmentUnavailableError(f"{type(error).__name__}: {error}") from error
 
@@ -64,7 +88,7 @@ class HttpxAuctionEvaluationService(AuctionEvaluationService):
         message = f"HTTP {response.status_code}: {self._message(response)}"
         if response.status_code in FINAL_REFUSALS:
             if response.status_code == httpx.codes.BAD_REQUEST:
-                logger.error("Investment found the evaluation of auction %s malformed: %s", auction_id, message)
+                logger.error("Investment found the request for auction %s malformed: %s", auction_id, message)
             return EvaluationOutcome(kind=EvaluationOutcomeKind.REFUSED, message=message)
         raise InvestmentUnavailableError(message)
 

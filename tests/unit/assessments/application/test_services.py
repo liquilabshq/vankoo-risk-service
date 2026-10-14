@@ -13,6 +13,7 @@ from assessments.application.outbound_services import (
 from assessments.domain.events import RiskAssessmentIssued
 from assessments.domain.exceptions import RiskAssessmentNotFoundError
 from assessments.domain.value_objects import Currency, DeliveryStatus
+from registries.interfaces.acl import PayerStandingRecord
 from shared.domain.events import DomainEvent
 from shared.domain.exceptions import DomainError
 from tests.fakes import NOW, StubEvaluationService, auction_created, build_service
@@ -20,7 +21,7 @@ from tests.fakes import NOW, StubEvaluationService, auction_created, build_servi
 ACCEPTED = EvaluationOutcome(kind=EvaluationOutcomeKind.ACCEPTED, auction_status="DRAFT")
 
 
-async def test_assess_auction_issues_one_provisional_assessment() -> None:
+async def test_assess_auction_grades_the_payer_from_the_registries() -> None:
     sut = build_service()
     published: list[DomainEvent] = []
 
@@ -34,7 +35,11 @@ async def test_assess_auction_issues_one_provisional_assessment() -> None:
     assert assessment is not None
     assert assessment.id == 1
     assert assessment.assessment_id.value.startswith("risk-")
-    assert assessment.decision.provisional is True
+    assert assessment.decision.provisional is False
+    assert assessment.eligible is True
+    assert assessment.grade is not None and assessment.grade.value == "B"
+    assert assessment.decision.score == 60
+    assert sut.registries.asked == ["20123456789"]
     assert assessment.facts.invoice_amount.amount == Decimal("10000.00")
     assert assessment.facts.invoice_amount.currency is Currency.PEN
     assert assessment.next_delivery_at == NOW
@@ -94,8 +99,9 @@ async def test_delivery_sends_the_stored_assessment_and_records_acceptance() -> 
     delivered = await sut.service.deliver_assessment(issued.facts.auction_id.value)
 
     [call] = sut.evaluations.calls
+    assert call["kind"] == "evaluation"
     assert call["assessment_id"] == issued.assessment_id.value
-    assert call["risk_grade"] == issued.grade.value
+    assert call["risk_grade"] == "B"
     assert call["full_balance_outstanding"] is True
     assert call["assessed_at"] == NOW
     assert delivered.delivery_status is DeliveryStatus.DELIVERED
@@ -144,3 +150,33 @@ async def test_reading_an_unknown_auction_is_not_found() -> None:
     sut = build_service()
     with pytest.raises(RiskAssessmentNotFoundError):
         await sut.service.get_risk_assessment_by_auction_id("missing")
+
+
+async def test_a_payer_that_fails_the_filter_is_rejected_in_investment() -> None:
+    inactive = PayerStandingRecord(
+        registry_loaded=True, found=True, name="PAGADOR S.A.C.", status="BAJA DE OFICIO", domicile_condition="HABIDO"
+    )
+    rejected = EvaluationOutcome(kind=EvaluationOutcomeKind.ACCEPTED, auction_status="REJECTED")
+    sut = build_service(StubEvaluationService(outcomes=[rejected]), standing=inactive)
+    issued = await sut.service.assess_auction(**auction_created())
+    assert issued is not None
+    assert issued.eligible is False
+    assert issued.grade is None
+    assert issued.decision.rejection_code == "PAYER_NOT_ACTIVE"
+
+    delivered = await sut.service.deliver_assessment(issued.facts.auction_id.value)
+
+    [call] = sut.evaluations.calls
+    assert call["kind"] == "rejection"
+    assert call["reason_code"] == "PAYER_NOT_ACTIVE"
+    assert "BAJA DE OFICIO" in str(call["reason"])
+    assert delivered.delivery_status is DeliveryStatus.DELIVERED
+    assert delivered.investment_auction_status == "REJECTED"
+
+
+async def test_without_the_registry_the_auction_is_still_graded() -> None:
+    sut = build_service(standing=PayerStandingRecord(registry_loaded=False, found=False))
+    assessment = await sut.service.assess_auction(**auction_created())
+    assert assessment is not None
+    assert assessment.eligible is True
+    assert assessment.grade is not None and assessment.grade.value == "C"

@@ -5,4 +5,4 @@
 - **Esquema:** cada cambio de tablas es una migración de Alembic generada con `--autogenerate`, leída antes de aplicarla.
 - **Ramas:** `main` y `develop`, con ramas `feature/`, `bugfix/`, `chore/`, `docs/` o `ci/` que se fusionan en `develop` por PR.
 - **Commits y PR:** Conventional Commits en inglés, con cuerpo (`feat(assessments): …`).
-- **Parches temporales:** se marcan en el código, la configuración, la documentación y los logs, y explican cómo quitarlos. Ejemplo: [PROVISIONAL_RISK_GRADE.md](PROVISIONAL_RISK_GRADE.md).
+- **Parches temporales:** se marcan en el código, la configuración, la documentación y los logs, y explican cómo quitarlos.

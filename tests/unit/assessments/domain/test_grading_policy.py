@@ -1,22 +1,173 @@
-"""The provisional policy: varied, stable and always marked provisional."""
-from assessments.domain.services import PROVISIONAL_POLICY_VERSION, ProvisionalHashGradePolicy
-from assessments.domain.value_objects import RiskGrade
-from tests.fakes import facts
+"""The points policy: the filter, each signal, the bands, and the names."""
+from datetime import date, timedelta
+from decimal import Decimal
+from typing import Any
+
+import pytest
+
+from assessments.domain.services import (
+    PAYER_DOMICILE_NOT_FOUND,
+    PAYER_NOT_ACTIVE,
+    PAYER_NOT_IN_REGISTRY,
+    POINTS_POLICY_VERSION,
+    PointsGradingPolicy,
+    grade_for,
+    names_match,
+    normalize_company_name,
+)
+from assessments.domain.value_objects import (
+    AuctionFacts,
+    AuctionId,
+    Currency,
+    Money,
+    Payer,
+    PayerStanding,
+    RiskGrade,
+    Ruc,
+)
+
+TODAY = date(2026, 10, 14)
+ACTIVE_COMPANY = PayerStanding(
+    registry_loaded=True,
+    found=True,
+    name="PAGADOR SOCIEDAD ANONIMA CERRADA",
+    status="ACTIVO",
+    domicile_condition="HABIDO",
+    ubigeo="150101",
+)
 
 
-def test_same_auction_always_gets_the_same_grade() -> None:
-    policy = ProvisionalHashGradePolicy()
-    assert policy.grade(facts("auction-42")) == policy.grade(facts("auction-42"))
+def auction(ruc: str = "20123456789", name: str = "Pagador S.A.C.", days: int = 45) -> AuctionFacts:
+    return AuctionFacts(
+        auction_id=AuctionId("auction-1"),
+        invoice_id="invoice-1",
+        mype_id="mype-1",
+        payer=Payer(Ruc(ruc), name),
+        due_date=TODAY + timedelta(days=days),
+        invoice_amount=Money(Decimal("10000"), Currency.PEN),
+        green_certified=False,
+    )
 
 
-def test_grades_are_varied_across_auctions() -> None:
-    policy = ProvisionalHashGradePolicy()
-    grades = {policy.grade(facts(f"auction-{n}")).grade for n in range(60)}
-    assert grades == {RiskGrade.A, RiskGrade.B, RiskGrade.C}
+def standing(**changes: Any) -> PayerStanding:
+    values: dict[str, Any] = {
+        "registry_loaded": ACTIVE_COMPANY.registry_loaded,
+        "found": ACTIVE_COMPANY.found,
+        "name": ACTIVE_COMPANY.name,
+        "status": ACTIVE_COMPANY.status,
+        "domicile_condition": ACTIVE_COMPANY.domicile_condition,
+        "ubigeo": ACTIVE_COMPANY.ubigeo,
+        "withholding_agent": False,
+        "perception_agent": False,
+    }
+    values.update(changes)
+    return PayerStanding(**values)
 
 
-def test_every_decision_is_provisional_and_fully_outstanding() -> None:
-    decision = ProvisionalHashGradePolicy().grade(facts())
-    assert decision.provisional is True
-    assert decision.full_balance_outstanding is True
-    assert decision.policy_version == PROVISIONAL_POLICY_VERSION
+def codes(facts: AuctionFacts, payer: PayerStanding) -> dict[str, int]:
+    decision = PointsGradingPolicy().grade(facts, payer, TODAY)
+    return {factor.code: factor.points for factor in decision.factors}
+
+
+def test_a_typical_company_is_b() -> None:
+    decision = PointsGradingPolicy().grade(auction(), ACTIVE_COMPANY, TODAY)
+    assert decision.eligible is True
+    assert decision.score == 65
+    assert decision.grade is RiskGrade.B
+    assert decision.policy_version == POINTS_POLICY_VERSION
+    assert decision.provisional is False
+    assert {factor.code for factor in decision.factors} == {
+        "DOMICILE_FOUND",
+        "COMPANY",
+        "NAME_MATCHES",
+        "TERM_31_TO_60_DAYS",
+    }
+
+
+def test_a_withholding_agent_is_a() -> None:
+    decision = PointsGradingPolicy().grade(auction(), standing(withholding_agent=True), TODAY)
+    assert decision.score == 85
+    assert decision.grade is RiskGrade.A
+
+
+def test_a_perception_agent_counts_less_and_never_on_top_of_withholding() -> None:
+    assert codes(auction(), standing(perception_agent=True))["PERCEPTION_AGENT"] == 10
+    both = codes(auction(), standing(withholding_agent=True, perception_agent=True))
+    assert both["WITHHOLDING_AGENT"] == 20
+    assert "PERCEPTION_AGENT" not in both
+
+
+def test_a_name_that_does_not_match_lowers_it_to_c() -> None:
+    decision = PointsGradingPolicy().grade(auction(name="Otra Empresa S.A."), ACTIVE_COMPANY, TODAY)
+    assert decision.score == 45
+    assert decision.grade is RiskGrade.C
+    assert "NAME_MISMATCH" in {factor.code for factor in decision.factors}
+
+
+@pytest.mark.parametrize(
+    ("days", "code", "points"),
+    [(10, "TERM_UP_TO_30_DAYS", 10), (30, "TERM_UP_TO_30_DAYS", 10), (31, "TERM_31_TO_60_DAYS", 5),
+     (60, "TERM_31_TO_60_DAYS", 5), (90, "TERM_61_TO_90_DAYS", 0), (91, "TERM_OVER_90_DAYS", -10)],
+)
+def test_the_term_counts_days_to_the_due_date(days: int, code: str, points: int) -> None:
+    assert codes(auction(days=days), ACTIVE_COMPANY)[code] == points
+
+
+def test_individuals_and_unverified_addresses_count_against() -> None:
+    factors = codes(auction(ruc="10456789012"), standing(domicile_condition="PENDIENTE"))
+    assert factors["INDIVIDUAL"] == -5
+    assert factors["DOMICILE_UNVERIFIED"] == -10
+
+
+@pytest.mark.parametrize(
+    ("payer", "code"),
+    [
+        (standing(found=False, name=None, status=None, domicile_condition=None), PAYER_NOT_IN_REGISTRY),
+        (standing(status="BAJA DE OFICIO"), PAYER_NOT_ACTIVE),
+        (standing(status="SUSPENSION TEMPORAL"), PAYER_NOT_ACTIVE),
+        (standing(domicile_condition="NO HABIDO"), PAYER_DOMICILE_NOT_FOUND),
+        (standing(domicile_condition="NO HALLADO SE MUDO D"), PAYER_DOMICILE_NOT_FOUND),
+    ],
+)
+def test_the_filter_rejects_with_a_code_and_a_reason(payer: PayerStanding, code: str) -> None:
+    decision = PointsGradingPolicy().grade(auction(), payer, TODAY)
+    assert decision.eligible is False
+    assert decision.grade is None
+    assert decision.rejection_code == code
+    assert decision.rejection_reason
+
+
+def test_without_the_registry_every_auction_is_c_and_never_rejected() -> None:
+    decision = PointsGradingPolicy().grade(auction(), PayerStanding(registry_loaded=False, found=False), TODAY)
+    assert decision.eligible is True
+    assert decision.grade is RiskGrade.C
+    assert decision.score is None
+    assert [factor.code for factor in decision.factors] == ["REGISTRY_UNAVAILABLE"]
+
+
+@pytest.mark.parametrize(("score", "grade"), [(100, RiskGrade.A), (75, RiskGrade.A), (74, RiskGrade.B),
+                                              (55, RiskGrade.B), (54, RiskGrade.C), (0, RiskGrade.C)])
+def test_bands(score: int, grade: RiskGrade) -> None:
+    assert grade_for(score) is grade
+
+
+@pytest.mark.parametrize(
+    ("invoice", "registered"),
+    [
+        ("Pagador S.A.C.", "PAGADOR SOCIEDAD ANONIMA CERRADA"),
+        ("Distribuidora Peñaflor E.I.R.L.", "DISTRIBUIDORA PEÑAFLOR EMPRESA INDIVIDUAL DE RESPONSABILIDAD LIMITADA"),
+        ("Constructora Lima SAC", "CONSTRUCTORA LIMA S.A.C."),
+        ("Agroexport del Norte S.A.", "AGROEXPORT DEL NORTE S A"),
+    ],
+)
+def test_the_same_company_written_differently_matches(invoice: str, registered: str) -> None:
+    assert names_match(invoice, registered)
+
+
+def test_different_companies_do_not_match() -> None:
+    assert not names_match("Textil Andes S.A.C.", "MINERA AURORA S.A.")
+    assert not names_match("S.A.C.", "S.A.")
+
+
+def test_normalization_removes_accents_punctuation_and_legal_forms() -> None:
+    assert normalize_company_name("Exportadora  Señor de Sipán, S.R.L.") == "EXPORTADORA SENOR DE SIPAN"

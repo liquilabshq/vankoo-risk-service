@@ -1,15 +1,35 @@
 # Arquitectura
 
-## Contexto
+## Contextos
 
-Un solo contexto acotado, `assessments`, con las cuatro capas de la skill `ddd-fastapi`:
+Dos contextos acotados, cada uno con las cuatro capas de la skill `ddd-fastapi`:
+
+- `assessments` decide sobre cada subasta.
+- `registries` guarda la copia local de los padrones de SUNAT.
+
+`assessments` le pregunta a `registries` solo por su fachada (`registries/interfaces/acl.py`), a través de `assessments/application/acl.py`, que es el único módulo que la importa.
+
+### `assessments`
 
 | Capa | Qué hay |
 |---|---|
-| `domain/` | El agregado `RiskAssessment`, sus value objects (`Ruc`, `RiskGrade`, `AssessmentId`, `Money`…), el evento `RiskAssessmentIssued` y la política de calificación (`RiskGradingPolicy`) |
-| `application/` | `RiskAssessmentApplicationService` (evaluar, entregar, leer) y el puerto `AuctionEvaluationService` hacia Investment |
+| `domain/` | El agregado `RiskAssessment`, sus value objects (`Ruc`, `RiskGrade`, `PayerStanding`, `ScoreFactor`, `GradingDecision`…), el evento `RiskAssessmentIssued` y la política `PointsGradingPolicy` |
+| `application/` | `RiskAssessmentApplicationService` (evaluar, entregar, leer), el puerto `AuctionEvaluationService` hacia Investment (calificar o rechazar) y `ExternalRegistriesService` (la ACL hacia `registries`) |
 | `infrastructure/` | Tablas, repositorio SQLAlchemy y el adaptador httpx de Investment |
 | `interfaces/` | Consumidor de Kafka, repartidor, rutas REST y el parser del contrato |
+
+### `registries`
+
+| Capa | Qué hay |
+|---|---|
+| `domain/` | `RegistrySnapshot` (qué versión de cada padrón está cargada), `TaxpayerRecord`, `AgentRecord` |
+| `application/` | `RegistryRefreshService`: compara la versión publicada (`Last-Modified`) con la cargada y, si cambió, descarga y reemplaza |
+| `infrastructure/` | Lectores de los archivos de SUNAT (`parsers.py`), descarga con httpx y carga masiva con `COPY` e intercambio atómico de tablas (`bulk.py`) |
+| `interfaces/` | La fachada para `assessments`, el comando `python -m registries refresh` y el programador diario |
+
+La carga del padrón (1,6 GB, unos 18 M de filas) corre siempre en **otro proceso**, nunca en el bucle de eventos de la API. Escribe en una tabla nueva y la intercambia por la vieja en la misma transacción: hasta el commit se sigue leyendo la copia anterior, y si algo falla queda intacta.
+
+### `shared`
 
 `shared/` es el núcleo compartido de la skill, más tres piezas técnicas que la skill no trae:
 
@@ -29,11 +49,12 @@ sequenceDiagram
 
     INV->>K: AuctionCreated (investment.auction-lifecycle.v1)
     K->>C: mensaje
+    C->>DB: consulta el padrón (registries)
     C->>DB: evaluación + eventId procesado (una transacción)
     C->>K: confirma el offset
     C-->>W: RiskAssessmentIssued (lo despierta)
-    W->>INV: PUT /api/v1/internal/auctions/{id}/evaluation
-    INV-->>W: 200 (subasta en DRAFT)
+    W->>INV: PUT …/evaluation (elegible) o POST …/rejection (no elegible)
+    INV-->>W: 200 (subasta en DRAFT o REJECTED)
     W->>DB: DELIVERED
 ```
 
@@ -80,4 +101,4 @@ El consumidor y el repartidor corren como tareas supervisadas dentro del `lifesp
 
 ## Lo que cambia en las fases siguientes
 
-Solo la política de calificación: una clase nueva en `domain/services.py` y una línea en `build_grading_policy()` (`interfaces/dependencies.py`). Ver [PROVISIONAL_RISK_GRADE.md](PROVISIONAL_RISK_GRADE.md).
+Nuevas fuentes (sancionados, listas especiales de SUNAT, central de riesgos simulada, noticias) entran como nuevos campos de `PayerStanding` o nuevos puertos, y nuevas reglas en la política. Ver [SCORING_RULES.md](SCORING_RULES.md).

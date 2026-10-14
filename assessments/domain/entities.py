@@ -95,7 +95,7 @@ class RiskAssessment(AggregateRoot):
         source_event_id: str,
         now: datetime,
     ) -> "RiskAssessment":
-        """Grade an auction and schedule the delivery of the grade right away.
+        """Decide on an auction and schedule the delivery of the decision right away.
 
         Args:
             assessment_id (AssessmentId): A fresh identifier.
@@ -115,7 +115,7 @@ class RiskAssessment(AggregateRoot):
             RiskAssessmentIssued(
                 auction_id=facts.auction_id.value,
                 assessment_id=assessment_id.value,
-                risk_grade=decision.grade.value,
+                risk_grade=decision.grade.value if decision.grade is not None else None,
             )
         )
         return assessment
@@ -141,9 +141,14 @@ class RiskAssessment(AggregateRoot):
         return self._decision
 
     @property
-    def grade(self) -> RiskGrade:
-        """The risk class given to the auction."""
+    def grade(self) -> RiskGrade | None:
+        """The risk class given to the auction; ``None`` if it is not eligible."""
         return self._decision.grade
+
+    @property
+    def eligible(self) -> bool:
+        """Whether the invoice can be funded at all."""
+        return self._decision.eligible
 
     @property
     def assessed_at(self) -> datetime:
