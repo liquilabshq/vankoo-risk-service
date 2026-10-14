@@ -13,11 +13,11 @@ from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import create_async_engine
 
+# One import per bounded context, plus the shared kernel's messaging tables.
+import assessments.infrastructure.models  # noqa: F401
+import shared.infrastructure.messaging  # noqa: F401
 from shared.infrastructure.models import Base
 from shared.infrastructure.settings import settings
-
-# One import per bounded context, e.g.:
-# import ordering.infrastructure.models  # noqa: F401
 
 config = context.config
 
