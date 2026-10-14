@@ -1,8 +1,9 @@
 """Entry point of the Vankoo Risk Service API.
 
 Assembles the application: registers every bounded context's router, the
-exception handlers and the event handlers, starts the Kafka consumer and the
-delivery worker, and closes everything on shutdown. The schema is Alembic's
+exception handlers and the event handlers, starts the Kafka consumer, the
+delivery worker and the daily refresh of SUNAT's registries, and closes
+everything on shutdown. The schema is Alembic's
 job (``alembic upgrade head``), never this module's.
 
 Run it with one worker only: the consumer and the delivery worker live in
@@ -28,6 +29,8 @@ from assessments.interfaces.consumers import AuctionLifecycleConsumer
 from assessments.interfaces.dependencies import build_risk_assessment_service
 from assessments.interfaces.routes import router as assessments_router
 from assessments.interfaces.workers import EvaluationDeliveryWorker
+from registries.infrastructure.settings import registry_settings
+from registries.interfaces.scheduler import RegistryRefreshScheduler
 from shared.application.events import event_bus
 from shared.infrastructure.database import engine, session_factory
 from shared.infrastructure.settings import kafka_settings, settings
@@ -69,6 +72,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         delivery_task = BackgroundTask("evaluation-delivery", worker.run)
         tasks.append(delivery_task)
         checks["evaluation_delivery"] = lambda: delivery_task.running
+    if registry_settings.refresh_enabled:
+        # Not a readiness check: assessments work (graded C) while the padrón is loading.
+        tasks.append(BackgroundTask("registry-refresh", RegistryRefreshScheduler(registry_settings).run))
     app.state.readiness_checks = checks
 
     for task in tasks:

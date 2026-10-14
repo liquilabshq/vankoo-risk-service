@@ -1,8 +1,9 @@
 """Dependency wiring of the Assessments bounded context.
 
-The one place that chooses the concrete adapter for each port, and the grading
-policy. The consumer, the delivery worker and the routes all build the
-application service through :func:`build_risk_assessment_service`.
+The one place that chooses the concrete adapter for each port, the grading
+policy, and the Registries facade the assessments ask about payers. The
+consumer, the delivery worker and the routes all build the application
+service through :func:`build_risk_assessment_service`.
 """
 from typing import Annotated
 
@@ -10,26 +11,24 @@ import httpx
 from fastapi import Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from assessments.application.acl import ExternalRegistriesService
 from assessments.application.services import RiskAssessmentApplicationService
-from assessments.domain.services import ProvisionalHashGradePolicy, RiskGradingPolicy
+from assessments.domain.services import PointsGradingPolicy, RiskGradingPolicy
 from assessments.infrastructure.clients import HttpxAuctionEvaluationService
 from assessments.infrastructure.repositories import SqlAlchemyRiskAssessmentRepository
+from registries.interfaces.acl import RegistriesContextFacade
 from shared.application.events import event_bus
 from shared.infrastructure.messaging import SqlAlchemyInbox
 from shared.interfaces.dependencies import SessionDep
 
 
 def build_grading_policy() -> RiskGradingPolicy:
-    """Return the policy that grades auctions.
-
-    PROVISIONAL: the grade comes from the auction id, not from the payer's
-    risk. Phase 2 returns the points-based policy here, and nothing else
-    changes. See ``docs/PROVISIONAL_RISK_GRADE.md``.
+    """Return the policy that decides on auctions; see ``docs/SCORING_RULES.md``.
 
     Returns:
         RiskGradingPolicy: The policy in force.
     """
-    return ProvisionalHashGradePolicy()
+    return PointsGradingPolicy()
 
 
 def build_risk_assessment_service(
@@ -47,6 +46,7 @@ def build_risk_assessment_service(
     return RiskAssessmentApplicationService(
         SqlAlchemyRiskAssessmentRepository(session),
         SqlAlchemyInbox(session),
+        ExternalRegistriesService(RegistriesContextFacade(session)),
         HttpxAuctionEvaluationService(investment_client),
         build_grading_policy(),
         session,

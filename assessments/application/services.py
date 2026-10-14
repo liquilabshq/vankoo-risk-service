@@ -2,7 +2,7 @@
 
 Each method is one use case: it turns primitives into domain types, loads what
 it needs, asks the aggregate to act, saves it and commits. It holds no
-business rule: the grade is the policy's call, and what a delivery outcome
+business rule: the decision is the policy's call, and what a delivery outcome
 means for the assessment is the aggregate's.
 """
 import logging
@@ -10,6 +10,7 @@ from collections.abc import Callable
 from datetime import UTC, date, datetime
 from decimal import Decimal
 
+from assessments.application.acl import ExternalRegistriesService
 from assessments.application.outbound_services import (
     AuctionEvaluationService,
     EvaluationOutcomeKind,
@@ -44,6 +45,7 @@ class RiskAssessmentApplicationService:
         self,
         risk_assessment_repository: RiskAssessmentRepository,
         inbox: Inbox,
+        registries: ExternalRegistriesService,
         evaluation_service: AuctionEvaluationService,
         grading_policy: RiskGradingPolicy,
         unit_of_work: UnitOfWork,
@@ -55,14 +57,16 @@ class RiskAssessmentApplicationService:
         Args:
             risk_assessment_repository (RiskAssessmentRepository): Access to assessments.
             inbox (Inbox): The integration events already applied.
-            evaluation_service (AuctionEvaluationService): Delivers grades to Investment.
-            grading_policy (RiskGradingPolicy): Decides the grade.
+            registries (ExternalRegistriesService): What SUNAT says about the payer.
+            evaluation_service (AuctionEvaluationService): Delivers decisions to Investment.
+            grading_policy (RiskGradingPolicy): Decides eligibility and the grade.
             unit_of_work (UnitOfWork): The transaction to commit.
             event_bus (EventBus): Where the recorded domain events are published.
             clock (Clock): The current time, replaceable in tests.
         """
         self._risk_assessments = risk_assessment_repository
         self._inbox = inbox
+        self._registries = registries
         self._evaluations = evaluation_service
         self._grading_policy = grading_policy
         self._unit_of_work = unit_of_work
@@ -117,30 +121,39 @@ class RiskAssessmentApplicationService:
             logger.info("Auction %s already has assessment %s", auction_id, existing.assessment_id.value)
             return existing
 
-        decision = self._grading_policy.grade(facts)
-        assessment = RiskAssessment.issue(AssessmentId.new(), facts, decision, event_id, self._clock())
+        standing = await self._registries.payer_standing(facts.payer.ruc)
+        now = self._clock()
+        decision = self._grading_policy.grade(facts, standing, now.date())
+        assessment = RiskAssessment.issue(AssessmentId.new(), facts, decision, event_id, now)
         events = assessment.pull_events()
         saved = await self._risk_assessments.save(assessment)
         await self._inbox.record(event_id, AUCTION_CREATED, facts.auction_id.value)
         await self._unit_of_work.commit()
         await self._event_bus.publish(events)
 
-        if decision.provisional:
-            logger.warning(
-                "PROVISIONAL risk grade %s for auction %s (assessment %s, policy %s): it says nothing about the payer",
-                decision.grade,
+        if decision.eligible:
+            logger.info(
+                "Auction %s graded %s (score %s, assessment %s)",
                 auction_id,
+                decision.grade,
+                decision.score,
                 saved.assessment_id.value,
-                decision.policy_version,
             )
         else:
-            logger.info(
-                "Risk grade %s for auction %s (assessment %s)", decision.grade, auction_id, saved.assessment_id.value
+            logger.warning(
+                "Auction %s is not eligible (%s, assessment %s): %s",
+                auction_id,
+                decision.rejection_code,
+                saved.assessment_id.value,
+                decision.rejection_reason,
             )
         return saved
 
     async def deliver_assessment(self, auction_id: str) -> RiskAssessment:
-        """Send an auction's pending assessment to Investment and record the answer.
+        """Send an auction's pending decision to Investment and record the answer.
+
+        An eligible decision becomes the auction's grade; one that is not
+        eligible rejects the auction.
 
         Returns:
             RiskAssessment: The assessment after the attempt.
@@ -150,14 +163,24 @@ class RiskAssessmentApplicationService:
             ConflictError: If the delivery is already settled.
         """
         assessment = await self.get_risk_assessment_by_auction_id(auction_id)
+        decision = assessment.decision
         try:
-            outcome = await self._evaluations.submit(
-                auction_id=assessment.facts.auction_id.value,
-                assessment_id=assessment.assessment_id.value,
-                risk_grade=assessment.grade.value,
-                full_balance_outstanding=assessment.decision.full_balance_outstanding,
-                assessed_at=assessment.assessed_at,
-            )
+            if decision.eligible and decision.grade is not None:
+                outcome = await self._evaluations.submit(
+                    auction_id=assessment.facts.auction_id.value,
+                    assessment_id=assessment.assessment_id.value,
+                    risk_grade=decision.grade.value,
+                    full_balance_outstanding=decision.full_balance_outstanding,
+                    assessed_at=assessment.assessed_at,
+                )
+            else:
+                outcome = await self._evaluations.reject(
+                    auction_id=assessment.facts.auction_id.value,
+                    assessment_id=assessment.assessment_id.value,
+                    reason_code=decision.rejection_code or "NOT_ELIGIBLE",
+                    reason=decision.rejection_reason or "The invoice is not eligible",
+                    assessed_at=assessment.assessed_at,
+                )
         except InvestmentUnavailableError as error:
             assessment.record_delivery_failure(str(error), self._clock())
             logger.warning(

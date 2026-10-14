@@ -5,8 +5,10 @@ package imports them; the domain and application layers never see them.
 """
 from datetime import date, datetime
 from decimal import Decimal
+from typing import Any
 
-from sqlalchemy import Boolean, Date, DateTime, Index, Integer, Numeric, String
+from sqlalchemy import Boolean, Date, DateTime, Index, Integer, Numeric, String, text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from shared.infrastructure.models import AuditableModel, Base
@@ -33,7 +35,12 @@ class RiskAssessmentModel(AuditableModel, Base):
     invoice_amount: Mapped[Decimal] = mapped_column(Numeric(18, 2))
     invoice_currency: Mapped[str] = mapped_column(String(3))
     green_certified: Mapped[bool] = mapped_column(Boolean)
-    risk_grade: Mapped[str] = mapped_column(String(1))
+    eligible: Mapped[bool] = mapped_column(Boolean, server_default=text("true"))
+    risk_grade: Mapped[str | None] = mapped_column(String(1))
+    score: Mapped[int | None] = mapped_column(Integer)
+    score_factors: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, server_default=text("'[]'::jsonb"))
+    rejection_code: Mapped[str | None] = mapped_column(String(60))
+    rejection_reason: Mapped[str | None] = mapped_column(String(500))
     full_balance_outstanding: Mapped[bool] = mapped_column(Boolean)
     grading_policy: Mapped[str] = mapped_column(String(40))
     provisional: Mapped[bool] = mapped_column(Boolean)

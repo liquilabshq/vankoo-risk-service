@@ -22,6 +22,7 @@ from assessments.domain.value_objects import (
     Payer,
     RiskGrade,
     Ruc,
+    ScoreFactor,
 )
 from assessments.infrastructure.models import RiskAssessmentModel
 
@@ -76,7 +77,14 @@ class SqlAlchemyRiskAssessmentRepository(RiskAssessmentRepository):
             invoice_amount=facts.invoice_amount.amount,
             invoice_currency=facts.invoice_amount.currency.value,
             green_certified=facts.green_certified,
-            risk_grade=decision.grade.value,
+            eligible=decision.eligible,
+            risk_grade=decision.grade.value if decision.grade is not None else None,
+            score=decision.score,
+            score_factors=[
+                {"code": factor.code, "points": factor.points, "detail": factor.detail} for factor in decision.factors
+            ],
+            rejection_code=decision.rejection_code,
+            rejection_reason=decision.rejection_reason,
             full_balance_outstanding=decision.full_balance_outstanding,
             grading_policy=decision.policy_version,
             provisional=decision.provisional,
@@ -104,10 +112,18 @@ class SqlAlchemyRiskAssessmentRepository(RiskAssessmentRepository):
                 green_certified=model.green_certified,
             ),
             GradingDecision(
-                grade=RiskGrade(model.risk_grade),
+                eligible=model.eligible,
+                grade=RiskGrade(model.risk_grade) if model.risk_grade is not None else None,
+                score=model.score,
+                factors=tuple(
+                    ScoreFactor(str(item["code"]), int(item["points"]), str(item["detail"]))
+                    for item in model.score_factors or []
+                ),
                 full_balance_outstanding=model.full_balance_outstanding,
                 policy_version=model.grading_policy,
                 provisional=model.provisional,
+                rejection_code=model.rejection_code,
+                rejection_reason=model.rejection_reason,
             ),
             model.assessed_at,
             model.source_event_id,
