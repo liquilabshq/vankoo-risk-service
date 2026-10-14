@@ -1,0 +1,213 @@
+"""Application service of the Assessments bounded context.
+
+Each method is one use case: it turns primitives into domain types, loads what
+it needs, asks the aggregate to act, saves it and commits. It holds no
+business rule: the grade is the policy's call, and what a delivery outcome
+means for the assessment is the aggregate's.
+"""
+import logging
+from collections.abc import Callable
+from datetime import UTC, date, datetime
+from decimal import Decimal
+
+from assessments.application.outbound_services import (
+    AuctionEvaluationService,
+    EvaluationOutcomeKind,
+    InvestmentUnavailableError,
+)
+from assessments.domain.entities import RiskAssessment
+from assessments.domain.exceptions import RiskAssessmentNotFoundError
+from assessments.domain.repositories import RiskAssessmentRepository
+from assessments.domain.services import RiskGradingPolicy
+from assessments.domain.value_objects import AssessmentId, AuctionFacts, AuctionId, Currency, Money, Payer, Ruc
+from shared.application.events import EventBus
+from shared.application.messaging import Inbox
+from shared.application.unit_of_work import UnitOfWork
+from shared.domain.exceptions import DomainError
+
+logger = logging.getLogger(__name__)
+
+AUCTION_CREATED = "AuctionCreated"
+
+type Clock = Callable[[], datetime]
+
+
+def utc_now() -> datetime:
+    """Return the current time in UTC; the default clock."""
+    return datetime.now(UTC)
+
+
+class RiskAssessmentApplicationService:
+    """Use cases that issue risk assessments, deliver them and read them."""
+
+    def __init__(
+        self,
+        risk_assessment_repository: RiskAssessmentRepository,
+        inbox: Inbox,
+        evaluation_service: AuctionEvaluationService,
+        grading_policy: RiskGradingPolicy,
+        unit_of_work: UnitOfWork,
+        event_bus: EventBus,
+        clock: Clock = utc_now,
+    ) -> None:
+        """Initialize the service with its collaborators.
+
+        Args:
+            risk_assessment_repository (RiskAssessmentRepository): Access to assessments.
+            inbox (Inbox): The integration events already applied.
+            evaluation_service (AuctionEvaluationService): Delivers grades to Investment.
+            grading_policy (RiskGradingPolicy): Decides the grade.
+            unit_of_work (UnitOfWork): The transaction to commit.
+            event_bus (EventBus): Where the recorded domain events are published.
+            clock (Clock): The current time, replaceable in tests.
+        """
+        self._risk_assessments = risk_assessment_repository
+        self._inbox = inbox
+        self._evaluations = evaluation_service
+        self._grading_policy = grading_policy
+        self._unit_of_work = unit_of_work
+        self._event_bus = event_bus
+        self._clock = clock
+
+    async def assess_auction(
+        self,
+        *,
+        event_id: str,
+        auction_id: str,
+        invoice_id: str,
+        mype_id: str,
+        payer_ruc: str,
+        payer_name: str,
+        due_date: date,
+        invoice_amount: Decimal,
+        currency: str,
+        green_certified: bool,
+    ) -> RiskAssessment | None:
+        """Grade an auction Investment has just created, once per auction.
+
+        The assessment and the processed event are committed together, so a
+        redelivered event never produces a second assessment.
+
+        Returns:
+            RiskAssessment | None: The new assessment, the one the auction
+            already had, or ``None`` if this event was already applied.
+
+        Raises:
+            DomainError: If a fact is not acceptable (a RUC that is not 11
+                digits, an unknown currency, a negative amount…).
+        """
+        if await self._inbox.has_processed(event_id):
+            logger.info("Event %s was already applied; skipping it", event_id)
+            return None
+
+        facts = AuctionFacts(
+            auction_id=AuctionId(auction_id),
+            invoice_id=invoice_id,
+            mype_id=mype_id,
+            payer=Payer(Ruc(payer_ruc), payer_name),
+            due_date=due_date,
+            invoice_amount=Money(invoice_amount, self._currency(currency)),
+            green_certified=green_certified,
+        )
+
+        existing = await self._risk_assessments.find_by_auction_id(facts.auction_id)
+        if existing is not None:
+            await self._inbox.record(event_id, AUCTION_CREATED, facts.auction_id.value)
+            await self._unit_of_work.commit()
+            logger.info("Auction %s already has assessment %s", auction_id, existing.assessment_id.value)
+            return existing
+
+        decision = self._grading_policy.grade(facts)
+        assessment = RiskAssessment.issue(AssessmentId.new(), facts, decision, event_id, self._clock())
+        events = assessment.pull_events()
+        saved = await self._risk_assessments.save(assessment)
+        await self._inbox.record(event_id, AUCTION_CREATED, facts.auction_id.value)
+        await self._unit_of_work.commit()
+        await self._event_bus.publish(events)
+
+        if decision.provisional:
+            logger.warning(
+                "PROVISIONAL risk grade %s for auction %s (assessment %s, policy %s): it says nothing about the payer",
+                decision.grade,
+                auction_id,
+                saved.assessment_id.value,
+                decision.policy_version,
+            )
+        else:
+            logger.info(
+                "Risk grade %s for auction %s (assessment %s)", decision.grade, auction_id, saved.assessment_id.value
+            )
+        return saved
+
+    async def deliver_assessment(self, auction_id: str) -> RiskAssessment:
+        """Send an auction's pending assessment to Investment and record the answer.
+
+        Returns:
+            RiskAssessment: The assessment after the attempt.
+
+        Raises:
+            RiskAssessmentNotFoundError: If the auction has no assessment.
+            ConflictError: If the delivery is already settled.
+        """
+        assessment = await self.get_risk_assessment_by_auction_id(auction_id)
+        try:
+            outcome = await self._evaluations.submit(
+                auction_id=assessment.facts.auction_id.value,
+                assessment_id=assessment.assessment_id.value,
+                risk_grade=assessment.grade.value,
+                full_balance_outstanding=assessment.decision.full_balance_outstanding,
+                assessed_at=assessment.assessed_at,
+            )
+        except InvestmentUnavailableError as error:
+            assessment.record_delivery_failure(str(error), self._clock())
+            logger.warning(
+                "Could not deliver assessment %s (attempt %d), retrying at %s: %s",
+                assessment.assessment_id.value,
+                assessment.delivery_attempts,
+                assessment.next_delivery_at,
+                error,
+            )
+        else:
+            if outcome.kind is EvaluationOutcomeKind.ACCEPTED:
+                assessment.mark_delivered(self._clock(), outcome.auction_status or "")
+                logger.info(
+                    "Assessment %s delivered; auction %s is %s",
+                    assessment.assessment_id.value,
+                    auction_id,
+                    outcome.auction_status,
+                )
+            else:
+                assessment.mark_rejected(outcome.message or "Investment refused the evaluation")
+                logger.error(
+                    "Investment refused assessment %s for auction %s: %s",
+                    assessment.assessment_id.value,
+                    auction_id,
+                    outcome.message,
+                )
+
+        saved = await self._risk_assessments.save(assessment)
+        await self._unit_of_work.commit()
+        return saved
+
+    async def get_assessments_due_for_delivery(self, limit: int) -> list[RiskAssessment]:
+        """Return the pending assessments whose next delivery is due, oldest first."""
+        return await self._risk_assessments.find_due_for_delivery(self._clock(), limit)
+
+    async def get_risk_assessment_by_auction_id(self, auction_id: str) -> RiskAssessment:
+        """Return the assessment of one auction.
+
+        Raises:
+            RiskAssessmentNotFoundError: If the auction was never assessed.
+            DomainError: If the auction id is blank or too long.
+        """
+        assessment = await self._risk_assessments.find_by_auction_id(AuctionId(auction_id))
+        if assessment is None:
+            raise RiskAssessmentNotFoundError(auction_id)
+        return assessment
+
+    @staticmethod
+    def _currency(code: str) -> Currency:
+        try:
+            return Currency(code.strip().upper())
+        except ValueError:
+            raise DomainError(f"'{code}' is not a supported currency: use PEN or USD") from None

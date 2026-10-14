@@ -5,6 +5,8 @@ the working directory. A missing required value stops the application at
 start-up, with the variable's name in the error, instead of failing on the
 first request that needs it.
 """
+from typing import Literal
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -27,4 +29,26 @@ class Settings(BaseSettings):
     docs_enabled: bool = True
 
 
+class KafkaSettings(BaseSettings):
+    """How this service reaches the Kafka broker, read from ``KAFKA_*`` variables.
+
+    Attributes:
+        bootstrap_servers (str): ``host:port`` of the broker, e.g. ``kafka-broker:9094``.
+        group_id (str): The consumer group; its committed offsets say where to resume.
+        auto_offset_reset (str): Where a group with no committed offset starts.
+            ``latest`` on purpose: the topics keep every event forever, and
+            replaying old auctions would re-grade them.
+        consumer_enabled (bool): Start the consumer with the application. Off in
+            tests and when only running migrations.
+    """
+
+    model_config = SettingsConfigDict(env_file=".env", env_prefix="KAFKA_", extra="ignore")
+
+    bootstrap_servers: str = "localhost:9092"
+    group_id: str = "risk-auction-assessment-v1"
+    auto_offset_reset: Literal["latest", "earliest"] = "latest"
+    consumer_enabled: bool = True
+
+
 settings = Settings()
+kafka_settings = KafkaSettings()
