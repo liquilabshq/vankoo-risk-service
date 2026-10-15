@@ -2,7 +2,8 @@
 
 The grading policy is the rule that turns what we know about an auction and
 its payer into a decision. It belongs to no single aggregate: it reads facts
-Investment published and what SUNAT's registries say. It is a port, so a new
+Investment published, what the public registries say and what a credit bureau
+reports. It is a port, so a new
 policy replaces it without touching the assessment, the consumer or the
 delivery. The rules of the current one are in ``docs/SCORING_RULES.md``.
 """
@@ -10,11 +11,20 @@ import re
 import unicodedata
 from abc import ABC, abstractmethod
 from datetime import date
+from decimal import Decimal
 from difflib import SequenceMatcher
 
-from assessments.domain.value_objects import AuctionFacts, GradingDecision, PayerStanding, RiskGrade, ScoreFactor
+from assessments.domain.value_objects import (
+    AuctionFacts,
+    CreditReport,
+    GradingDecision,
+    PayerStanding,
+    RiskGrade,
+    SbsRating,
+    ScoreFactor,
+)
 
-POINTS_POLICY_VERSION = "points-v1"
+POINTS_POLICY_VERSION = "points-v2"
 BASE_SCORE = 40
 GRADE_A_FROM = 75
 GRADE_B_FROM = 55
@@ -23,6 +33,23 @@ NAME_MATCH_THRESHOLD = 0.85
 PAYER_NOT_IN_REGISTRY = "PAYER_NOT_IN_REGISTRY"
 PAYER_NOT_ACTIVE = "PAYER_NOT_ACTIVE"
 PAYER_DOMICILE_NOT_FOUND = "PAYER_DOMICILE_NOT_FOUND"
+PAYER_SHELL_COMPANY = "PAYER_SHELL_COMPANY"
+
+CREDIT_RATING_POINTS = {
+    SbsRating.NORMAL: ("CREDIT_RATING_NORMAL", 0, "Normal"),
+    SbsRating.POTENTIAL_PROBLEMS: ("CREDIT_RATING_CPP", -10, "CPP (con problemas potenciales)"),
+    SbsRating.DEFICIENT: ("CREDIT_RATING_DEFICIENT", -20, "Deficiente"),
+    SbsRating.DOUBTFUL: ("CREDIT_RATING_DOUBTFUL", -30, "Dudoso"),
+    SbsRating.LOSS: ("CREDIT_RATING_LOSS", -40, "Pérdida"),
+}
+
+SOURCE_NAMES = {
+    "sunat-ssco": "lista de SUNAT de sujetos sin capacidad operativa",
+    "sunat-deuda-coactiva": "lista de SUNAT de deuda en cobranza coactiva",
+    "oece-inhabilitados": "lista de OECE de proveedores inhabilitados",
+    "oece-multas": "lista de OECE de multas",
+    "oefa-ruias": "registro de OEFA de infractores ambientales",
+}
 
 ACTIVE_STATUS = "ACTIVO"
 FOUND_CONDITION = "HABIDO"
@@ -46,13 +73,17 @@ class RiskGradingPolicy(ABC):
     """Decides whether an auction can be funded, and its grade, with no I/O."""
 
     @abstractmethod
-    def grade(self, facts: AuctionFacts, standing: PayerStanding, today: date) -> GradingDecision:
+    def grade(
+        self, facts: AuctionFacts, standing: PayerStanding, credit: CreditReport | None, today: date
+    ) -> GradingDecision:
         """Grade an auction.
 
         Args:
             facts (AuctionFacts): What Investment published about the auction.
-            standing (PayerStanding): What SUNAT says about the payer.
-            today (date): The day of the assessment, to count the days to the due date.
+            standing (PayerStanding): What the public registries say about the payer.
+            credit (CreditReport | None): What a credit bureau reports, if one was asked.
+            today (date): The day of the assessment, to count the days to the due
+                date and to tell which sanctions are in force.
 
         Returns:
             GradingDecision: Eligible with a grade, or rejected with its reason.
@@ -60,18 +91,22 @@ class RiskGradingPolicy(ABC):
 
 
 class PointsGradingPolicy(RiskGradingPolicy):
-    """Grades the payer with points from SUNAT's registries and the invoice's term.
+    """Grades the payer with points from public registries, a credit bureau and the invoice's term.
 
-    First a filter: a payer missing from the padrón, not active, or whose fiscal
-    address cannot be found makes the invoice not eligible. Then points, from a
-    base of 40: being an IGV withholding or perception agent, the address
-    condition, company or individual, whether the invoice names the payer as
-    SUNAT does, and the days left to the due date. 75 or more is A, 55 or more
-    is B, the rest is C. While the padrón has never been loaded, every auction
-    is C, never rejected for lack of data.
+    First a filter: a payer missing from the padrón, listed by SUNAT as without
+    operating capacity, not active, or whose fiscal address cannot be found
+    makes the invoice not eligible. Then points, from a base of 40: being an
+    IGV withholding or perception agent, the address condition, company or
+    individual, whether the invoice names the payer as SUNAT does, the days
+    left to the due date, debt in coactive collection, OECE sanctions, OEFA
+    offences and the credit rating. 75 or more is A, 55 or more is B, the rest
+    is C. While the padrón has never been loaded, every auction is C, never
+    rejected for lack of data; a sanction list never loaded only leaves a note.
     """
 
-    def grade(self, facts: AuctionFacts, standing: PayerStanding, today: date) -> GradingDecision:
+    def grade(
+        self, facts: AuctionFacts, standing: PayerStanding, credit: CreditReport | None, today: date
+    ) -> GradingDecision:
         ruc = facts.payer.ruc.value
         if not standing.registry_loaded:
             factor = ScoreFactor(
@@ -99,6 +134,9 @@ class PointsGradingPolicy(RiskGradingPolicy):
             *self._taxpayer_type_factors(ruc),
             *self._name_factors(facts.payer.name, standing.name),
             self._term_factor((facts.due_date - today).days),
+            *self._sanction_factors(standing, today),
+            *self._credit_factors(credit),
+            *self._unavailable_source_factors(standing),
         ]
         score = BASE_SCORE + sum(factor.points for factor in factors)
         return self._graded(grade_for(score), score, tuple(factors))
@@ -118,6 +156,12 @@ class PointsGradingPolicy(RiskGradingPolicy):
     def _rejection(ruc: str, standing: PayerStanding) -> tuple[str, str] | None:
         if not standing.found:
             return PAYER_NOT_IN_REGISTRY, f"El RUC del pagador ({ruc}) no figura en el padrón de SUNAT."
+        if standing.shell_company:
+            return (
+                PAYER_SHELL_COMPANY,
+                "SUNAT declaró al pagador sujeto sin capacidad operativa (SSCO): "
+                "sus operaciones no se consideran reales.",
+            )
         status = (standing.status or "").strip().upper()
         if status != ACTIVE_STATUS:
             return (
@@ -129,6 +173,58 @@ class PointsGradingPolicy(RiskGradingPolicy):
         if condition.startswith(NOT_FOUND_CONDITIONS):
             return PAYER_DOMICILE_NOT_FOUND, f"El domicilio fiscal del pagador figura en SUNAT como «{condition}»."
         return None
+
+    @staticmethod
+    def _sanction_factors(standing: PayerStanding, today: date) -> list[ScoreFactor]:
+        factors = []
+        if standing.coactive_debt is not None:
+            factors.append(
+                ScoreFactor(
+                    "COACTIVE_DEBT",
+                    -20,
+                    f"Tiene deuda en cobranza coactiva con SUNAT por S/ {_soles(standing.coactive_debt)}.",
+                )
+            )
+        if any(period.in_force_on(today) for period in standing.oece_disqualifications):
+            factors.append(
+                ScoreFactor("OECE_DISQUALIFIED", -15, "Está inhabilitado por OECE para contratar con el Estado.")
+            )
+        if standing.oece_fines:
+            total = sum((period.amount or Decimal(0) for period in standing.oece_fines), Decimal(0))
+            factors.append(
+                ScoreFactor(
+                    "OECE_UNPAID_FINE",
+                    -10,
+                    f"Tiene {len(standing.oece_fines)} multa(s) de OECE sin pagar por S/ {_soles(total)}.",
+                )
+            )
+        if standing.environmental_infractions > 0:
+            factors.append(
+                ScoreFactor(
+                    "ENVIRONMENTAL_OFFENDER",
+                    -5,
+                    f"Figura en el registro de infractores ambientales de OEFA "
+                    f"({standing.environmental_infractions} infracciones).",
+                )
+            )
+        return factors
+
+    @staticmethod
+    def _credit_factors(credit: CreditReport | None) -> list[ScoreFactor]:
+        if credit is None:
+            return []
+        code, points, label = CREDIT_RATING_POINTS[credit.rating]
+        source = "central de riesgos (simulado)" if credit.simulated else f"central de riesgos ({credit.source})"
+        return [ScoreFactor(code, points, f"Calificación SBS «{label}» según la {source}.")]
+
+    @staticmethod
+    def _unavailable_source_factors(standing: PayerStanding) -> list[ScoreFactor]:
+        return [
+            ScoreFactor(
+                "SOURCE_UNAVAILABLE", 0, f"No se consultó la {SOURCE_NAMES.get(source, source)}: no está cargada."
+            )
+            for source in standing.unavailable_sources
+        ]
 
     @staticmethod
     def _agent_factors(standing: PayerStanding) -> list[ScoreFactor]:
@@ -178,6 +274,10 @@ class PointsGradingPolicy(RiskGradingPolicy):
         if days <= 90:
             return ScoreFactor("TERM_61_TO_90_DAYS", 0, f"Vence en {days} días.")
         return ScoreFactor("TERM_OVER_90_DAYS", -10, f"Vence en {days} días.")
+
+
+def _soles(amount: Decimal) -> str:
+    return f"{amount:,.2f}"
 
 
 def grade_for(score: int) -> RiskGrade:

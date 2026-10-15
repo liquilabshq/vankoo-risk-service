@@ -2,7 +2,7 @@
 
 Microservicio de evaluación de riesgo de Vankoo. Decide si la factura de cada subasta se puede financiar y, si se puede, la califica con **A, B o C** antes de que la MYPE pueda cotizarla. La decisión se la entrega a Investment.
 
-Califica al **pagador** con datos públicos de SUNAT (padrón reducido del RUC y agentes de retención y percepción del IGV) y con reglas de puntos explicables: ver [docs/SCORING_RULES.md](docs/SCORING_RULES.md).
+Califica al **pagador** con datos públicos (padrón de SUNAT, agentes de retención, sujetos sin capacidad operativa, deuda coactiva, sanciones de OECE y OEFA), una central de riesgos **simulada** y reglas de puntos explicables: ver [docs/SCORING_RULES.md](docs/SCORING_RULES.md).
 
 ## Qué hace
 
@@ -18,13 +18,14 @@ Califica al **pagador** con datos públicos de SUNAT (padrón reducido del RUC y
 El contexto `registries` guarda una copia local de:
 
 - el **padrón reducido del RUC**: unos 18 millones de RUC, con RUC, razón social, estado, condición y ubigeo; unos 2 GB en PostgreSQL;
-- el **padrón de agentes de retención y percepción del IGV**: unas 7.800 filas.
+- el **padrón de agentes de retención y percepción del IGV**: unas 7.800 filas;
+- las listas de **sanciones**, que son pequeñas: SSCO de SUNAT (unas 770), deuda coactiva de SUNAT (unas 9.000), inhabilitados y multas de OECE (unas 14.000) e infractores ambientales de OEFA (unos 4.300).
 
 Se actualizan:
 
 ```bash
 uv run python -m registries refresh                    # los dos
-uv run python -m registries refresh --source agents    # solo uno (taxpayers | agents)
+uv run python -m registries refresh --source agents    # solo uno (ver --help)
 uv run python -m registries refresh --force            # aunque no haya versión nueva
 ```
 
@@ -96,6 +97,8 @@ No se rutea por el gateway todavía.
 | `REGISTRY_REFRESH_HOUR` | `4` | Hora del refresco diario (zona `REGISTRY_TIMEZONE`, `America/Lima`) |
 | `REGISTRY_TAXPAYERS_URL` | el ZIP de SUNAT | Dónde está el padrón reducido |
 | `REGISTRY_AGENTS_URL_TEMPLATE` | el ZIP mensual de datos abiertos | Dónde está el padrón de agentes (`{period}` = `YYYYMM`) |
+| `REGISTRY_SHELL_COMPANIES_URL`, `REGISTRY_COACTIVE_DEBTORS_URL`, `REGISTRY_OECE_DISQUALIFICATIONS_URL`, `REGISTRY_OECE_FINES_URL`, `REGISTRY_ENVIRONMENTAL_OFFENDERS_URL` | las de SUNAT, OECE y OEFA | Dónde están las listas de sanciones |
+| `CREDIT_BUREAU_ENABLED` | `true` | Consultar la central de riesgos **simulada** |
 | `DOCS_ENABLED` | `true` | Servir `/docs` |
 
 ## Pruebas

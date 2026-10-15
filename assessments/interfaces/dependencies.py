@@ -12,10 +12,13 @@ from fastapi import Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from assessments.application.acl import ExternalRegistriesService
+from assessments.application.outbound_services import CreditBureau
 from assessments.application.services import RiskAssessmentApplicationService
 from assessments.domain.services import PointsGradingPolicy, RiskGradingPolicy
 from assessments.infrastructure.clients import HttpxAuctionEvaluationService
+from assessments.infrastructure.credit_bureau import DisabledCreditBureau, SimulatedCreditBureau
 from assessments.infrastructure.repositories import SqlAlchemyRiskAssessmentRepository
+from assessments.infrastructure.settings import credit_bureau_settings
 from registries.interfaces.acl import RegistriesContextFacade
 from shared.application.events import event_bus
 from shared.infrastructure.messaging import SqlAlchemyInbox
@@ -29,6 +32,19 @@ def build_grading_policy() -> RiskGradingPolicy:
         RiskGradingPolicy: The policy in force.
     """
     return PointsGradingPolicy()
+
+
+def build_credit_bureau() -> CreditBureau:
+    """Return the credit bureau the scoring asks.
+
+    SIMULATED: Vankoo has no bureau contract, so the one in force makes up a
+    stable SBS rating per RUC. A real bureau's adapter goes here. See
+    ``assessments/infrastructure/credit_bureau.py``.
+
+    Returns:
+        CreditBureau: The simulated bureau, or none if ``CREDIT_BUREAU_ENABLED`` is false.
+    """
+    return SimulatedCreditBureau() if credit_bureau_settings.enabled else DisabledCreditBureau()
 
 
 def build_risk_assessment_service(
@@ -47,6 +63,7 @@ def build_risk_assessment_service(
         SqlAlchemyRiskAssessmentRepository(session),
         SqlAlchemyInbox(session),
         ExternalRegistriesService(RegistriesContextFacade(session)),
+        build_credit_bureau(),
         HttpxAuctionEvaluationService(investment_client),
         build_grading_policy(),
         session,

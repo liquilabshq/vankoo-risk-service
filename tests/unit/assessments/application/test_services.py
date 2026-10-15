@@ -180,3 +180,31 @@ async def test_without_the_registry_the_auction_is_still_graded() -> None:
     assert assessment is not None
     assert assessment.eligible is True
     assert assessment.grade is not None and assessment.grade.value == "C"
+
+
+async def test_the_credit_bureau_is_asked_about_the_payer() -> None:
+    from assessments.domain.value_objects import CreditReport, SbsRating
+
+    report = CreditReport(rating=SbsRating.DEFICIENT, source="simulated-bureau-v1", simulated=True)
+    sut = build_service(credit=report)
+    assessment = await sut.service.assess_auction(**auction_created())
+    assert assessment is not None
+    assert sut.credit_bureau.asked == ["20123456789"]
+    assert assessment.decision.score == 40
+    assert assessment.grade is not None and assessment.grade.value == "C"
+
+
+async def test_a_shell_company_payer_is_rejected() -> None:
+    shell = PayerStandingRecord(
+        registry_loaded=True,
+        found=True,
+        name="PAGADOR S.A.C.",
+        status="ACTIVO",
+        domicile_condition="HABIDO",
+        shell_company=True,
+    )
+    sut = build_service(standing=shell)
+    assessment = await sut.service.assess_auction(**auction_created())
+    assert assessment is not None
+    assert assessment.eligible is False
+    assert assessment.decision.rejection_code == "PAYER_SHELL_COMPANY"

@@ -35,7 +35,7 @@ async def test_reads_the_assessment_of_an_auction(sut: ServiceUnderTest, client:
     assert body["risk_grade"] == "B"
     assert body["score"] == 60
     assert body["provisional"] is False
-    assert body["grading_policy"] == "points-v1"
+    assert body["grading_policy"] == "points-v2"
     assert {factor["code"] for factor in body["factors"]} == {
         "DOMICILE_FOUND",
         "COMPANY",
