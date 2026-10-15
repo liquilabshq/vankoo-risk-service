@@ -1,4 +1,7 @@
-"""Settings the Assessments context owns, read from ``INVESTMENT_*`` and ``CREDIT_BUREAU_*`` variables."""
+"""Settings the Assessments context owns: ``INVESTMENT_*``, ``CREDIT_BUREAU_*`` and ``NEWS_*`` variables."""
+from typing import Literal
+
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -39,3 +42,35 @@ class CreditBureauSettings(BaseSettings):
 
 
 credit_bureau_settings = CreditBureauSettings()
+
+
+class NewsSettings(BaseSettings):
+    """The web search for negative news, read from ``NEWS_*`` variables and ``OPENAI_API_KEY``.
+
+    Attributes:
+        enabled (bool): Search for news. Without an API key it is off anyway.
+        model (str): The OpenAI model that searches and reads, e.g. ``gpt-6-luna``.
+        reasoning_effort (str): How much the model reasons; ``low`` is enough here.
+        max_searches (int): The most web searches per payer (each costs about $0.01).
+        cache_days (int): How long a payer's search is reused before searching again.
+        timeout (float): Seconds to wait for the whole search.
+        api_key (SecretStr | None): ``OPENAI_API_KEY``; never logged.
+    """
+
+    model_config = SettingsConfigDict(env_file=".env", env_prefix="NEWS_", extra="ignore")
+
+    enabled: bool = True
+    model: str = "gpt-6-luna"
+    reasoning_effort: Literal["none", "low", "medium", "high"] = "low"
+    max_searches: int = 5
+    cache_days: int = 7
+    timeout: float = 90.0
+    api_key: SecretStr | None = Field(default=None, validation_alias="OPENAI_API_KEY")
+
+    @property
+    def active(self) -> bool:
+        """Whether a search can run: turned on and with a key."""
+        return self.enabled and self.api_key is not None and bool(self.api_key.get_secret_value())
+
+
+news_settings = NewsSettings()
