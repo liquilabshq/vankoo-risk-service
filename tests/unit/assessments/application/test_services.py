@@ -208,3 +208,36 @@ async def test_a_shell_company_payer_is_rejected() -> None:
     assert assessment is not None
     assert assessment.eligible is False
     assert assessment.decision.rejection_code == "PAYER_SHELL_COMPANY"
+
+
+async def test_news_is_searched_once_and_reused_for_a_week() -> None:
+    from datetime import timedelta
+
+    sut = build_service()
+    await sut.service.assess_auction(**auction_created())
+    await sut.service.assess_auction(**auction_created(event_id="e-2", auction_id="auction-2"))
+    assert sut.news_screener.searched == [("20123456789", "PAGADOR SOCIEDAD ANONIMA CERRADA")]
+
+    sut.clock.advance(timedelta(days=8))
+    await sut.service.assess_auction(**auction_created(event_id="e-3", auction_id="auction-3"))
+    assert len(sut.news_screener.searched) == 2
+
+
+async def test_a_failed_news_search_does_not_stop_the_assessment() -> None:
+    from assessments.application.outbound_services import NewsUnavailableError
+    from tests.fakes import FakeNewsScreener
+
+    sut = build_service(news=FakeNewsScreener(NewsUnavailableError("timeout")))
+    assessment = await sut.service.assess_auction(**auction_created())
+    assert assessment is not None
+    assert "NEWS_UNAVAILABLE" in {f.code for f in assessment.decision.factors}
+    assert sut.news_screenings.rows == {}
+
+
+async def test_screening_turned_off_leaves_a_note() -> None:
+    from tests.fakes import FakeNewsScreener
+
+    sut = build_service(news=FakeNewsScreener(None))
+    assessment = await sut.service.assess_auction(**auction_created())
+    assert assessment is not None
+    assert "NEWS_NOT_SCREENED" in {f.code for f in assessment.decision.factors}

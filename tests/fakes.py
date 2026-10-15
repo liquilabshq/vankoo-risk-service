@@ -10,10 +10,12 @@ from assessments.application.outbound_services import (
     CreditBureau,
     EvaluationOutcome,
     InvestmentUnavailableError,
+    NewsScreener,
+    NewsUnavailableError,
 )
 from assessments.application.services import RiskAssessmentApplicationService
 from assessments.domain.entities import RiskAssessment
-from assessments.domain.repositories import RiskAssessmentRepository
+from assessments.domain.repositories import NewsScreeningRepository, RiskAssessmentRepository
 from assessments.domain.services import PointsGradingPolicy
 from assessments.domain.value_objects import (
     AuctionFacts,
@@ -23,6 +25,7 @@ from assessments.domain.value_objects import (
     DeliveryStatus,
     GradingDecision,
     Money,
+    NewsScreening,
     Payer,
     RiskGrade,
     Ruc,
@@ -195,6 +198,36 @@ class FixedCreditBureau(CreditBureau):
         return self.fixed
 
 
+class FakeNewsScreener(NewsScreener):
+    """Answers every payer with the same screening (or failure), counting the searches."""
+
+    def __init__(self, findings: tuple[Any, ...] | NewsUnavailableError | None = ()) -> None:
+        self.outcome = findings
+        self.searched: list[tuple[str, str]] = []
+
+    async def screen(self, ruc: Ruc, name: str) -> NewsScreening | None:
+        self.searched.append((ruc.value, name))
+        if isinstance(self.outcome, NewsUnavailableError):
+            raise self.outcome
+        if self.outcome is None:
+            return None
+        return NewsScreening(ruc.value, self.outcome, NOW, "gpt-6-luna", 4)
+
+
+class InMemoryNewsScreenings(NewsScreeningRepository):
+    """Keeps the latest screening per RUC."""
+
+    def __init__(self) -> None:
+        self.rows: dict[str, NewsScreening] = {}
+
+    async def find_since(self, ruc: str, since: datetime) -> NewsScreening | None:
+        row = self.rows.get(ruc)
+        return row if row is not None and row.screened_at >= since else None
+
+    async def save(self, screening: NewsScreening) -> None:
+        self.rows[screening.ruc] = screening
+
+
 class Clock:
     """A clock the test moves by hand."""
 
@@ -219,6 +252,8 @@ class ServiceUnderTest:
     evaluations: StubEvaluationService
     registries: FakeRegistriesFacade
     credit_bureau: FixedCreditBureau
+    news_screener: FakeNewsScreener
+    news_screenings: InMemoryNewsScreenings
     event_bus: EventBus
     clock: Clock
 
@@ -227,6 +262,7 @@ def build_service(
     evaluations: StubEvaluationService | None = None,
     standing: PayerStandingRecord = ACTIVE_COMPANY,
     credit: CreditReport | None = None,
+    news: FakeNewsScreener | None = None,
 ) -> ServiceUnderTest:
     """Wire the application service to fresh fakes and the points policy."""
     repository = InMemoryRiskAssessmentRepository()
@@ -235,6 +271,8 @@ def build_service(
     stub = evaluations or StubEvaluationService()
     registries = FakeRegistriesFacade(standing)
     credit_bureau = FixedCreditBureau(credit)
+    news_screener = news or FakeNewsScreener()
+    news_screenings = InMemoryNewsScreenings()
     bus = EventBus()
     clock = Clock()
     service = RiskAssessmentApplicationService(
@@ -242,13 +280,27 @@ def build_service(
         inbox,
         ExternalRegistriesService(cast(Any, registries)),
         credit_bureau,
+        news_screener,
+        news_screenings,
         stub,
         PointsGradingPolicy(),
         unit_of_work,
         bus,
         clock,
     )
-    return ServiceUnderTest(service, repository, inbox, unit_of_work, stub, registries, credit_bureau, bus, clock)
+    return ServiceUnderTest(
+        service,
+        repository,
+        inbox,
+        unit_of_work,
+        stub,
+        registries,
+        credit_bureau,
+        news_screener,
+        news_screenings,
+        bus,
+        clock,
+    )
 
 
 def graded(grade: RiskGrade = RiskGrade.B) -> GradingDecision:
@@ -259,7 +311,7 @@ def graded(grade: RiskGrade = RiskGrade.B) -> GradingDecision:
         score=60,
         factors=(ScoreFactor("DOMICILE_FOUND", 10, "Domicilio fiscal HABIDO en SUNAT."),),
         full_balance_outstanding=True,
-        policy_version="points-v2",
+        policy_version="points-v3",
     )
 
 

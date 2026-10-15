@@ -1,5 +1,5 @@
 """The points policy: the filter, each signal, the bands, and the names."""
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -22,6 +22,12 @@ from assessments.domain.value_objects import (
     CreditReport,
     Currency,
     Money,
+    NewsCategory,
+    NewsCheck,
+    NewsCheckStatus,
+    NewsFinding,
+    NewsScreening,
+    NewsSeverity,
     Payer,
     PayerStanding,
     RiskGrade,
@@ -31,6 +37,12 @@ from assessments.domain.value_objects import (
 )
 
 TODAY = date(2026, 10, 14)
+NO_NEWS = NewsCheck(
+    NewsCheckStatus.SCREENED,
+    NewsScreening(
+        ruc="20123456789", findings=(), screened_at=datetime(2026, 10, 14, tzinfo=UTC), model="m", sources_consulted=3
+    ),
+)
 ACTIVE_COMPANY = PayerStanding(
     registry_loaded=True,
     found=True,
@@ -69,12 +81,12 @@ def standing(**changes: Any) -> PayerStanding:
 
 
 def codes(facts: AuctionFacts, payer: PayerStanding) -> dict[str, int]:
-    decision = PointsGradingPolicy().grade(facts, payer, None, TODAY)
+    decision = PointsGradingPolicy().grade(facts, payer, None, NO_NEWS, TODAY)
     return {factor.code: factor.points for factor in decision.factors}
 
 
 def test_a_typical_company_is_b() -> None:
-    decision = PointsGradingPolicy().grade(auction(), ACTIVE_COMPANY, None, TODAY)
+    decision = PointsGradingPolicy().grade(auction(), ACTIVE_COMPANY, None, NO_NEWS, TODAY)
     assert decision.eligible is True
     assert decision.score == 65
     assert decision.grade is RiskGrade.B
@@ -89,7 +101,7 @@ def test_a_typical_company_is_b() -> None:
 
 
 def test_a_withholding_agent_is_a() -> None:
-    decision = PointsGradingPolicy().grade(auction(), standing(withholding_agent=True), None, TODAY)
+    decision = PointsGradingPolicy().grade(auction(), standing(withholding_agent=True), None, NO_NEWS, TODAY)
     assert decision.score == 85
     assert decision.grade is RiskGrade.A
 
@@ -102,7 +114,7 @@ def test_a_perception_agent_counts_less_and_never_on_top_of_withholding() -> Non
 
 
 def test_a_name_that_does_not_match_lowers_it_to_c() -> None:
-    decision = PointsGradingPolicy().grade(auction(name="Otra Empresa S.A."), ACTIVE_COMPANY, None, TODAY)
+    decision = PointsGradingPolicy().grade(auction(name="Otra Empresa S.A."), ACTIVE_COMPANY, None, NO_NEWS, TODAY)
     assert decision.score == 45
     assert decision.grade is RiskGrade.C
     assert "NAME_MISMATCH" in {factor.code for factor in decision.factors}
@@ -135,7 +147,7 @@ def test_individuals_and_unverified_addresses_count_against() -> None:
     ],
 )
 def test_the_filter_rejects_with_a_code_and_a_reason(payer: PayerStanding, code: str) -> None:
-    decision = PointsGradingPolicy().grade(auction(), payer, None, TODAY)
+    decision = PointsGradingPolicy().grade(auction(), payer, None, NO_NEWS, TODAY)
     assert decision.eligible is False
     assert decision.grade is None
     assert decision.rejection_code == code
@@ -143,7 +155,8 @@ def test_the_filter_rejects_with_a_code_and_a_reason(payer: PayerStanding, code:
 
 
 def test_without_the_registry_every_auction_is_c_and_never_rejected() -> None:
-    decision = PointsGradingPolicy().grade(auction(), PayerStanding(registry_loaded=False, found=False), None, TODAY)
+    unloaded = PayerStanding(registry_loaded=False, found=False)
+    decision = PointsGradingPolicy().grade(auction(), unloaded, None, NO_NEWS, TODAY)
     assert decision.eligible is True
     assert decision.grade is RiskGrade.C
     assert decision.score is None
@@ -179,7 +192,8 @@ def test_normalization_removes_accents_punctuation_and_legal_forms() -> None:
 
 
 def test_debt_in_coactive_collection_lowers_the_grade() -> None:
-    decision = PointsGradingPolicy().grade(auction(), standing(coactive_debt=Decimal("125000.50")), None, TODAY)
+    debtor = standing(coactive_debt=Decimal("125000.50"))
+    decision = PointsGradingPolicy().grade(auction(), debtor, None, NO_NEWS, TODAY)
     factor = next(f for f in decision.factors if f.code == "COACTIVE_DEBT")
     assert factor.points == -20
     assert "125,000.50" in factor.detail
@@ -221,7 +235,7 @@ def test_unpaid_oece_fines_and_environmental_offences_count_against() -> None:
 )
 def test_the_credit_rating_only_ever_takes_points(rating: SbsRating, code: str, points: int) -> None:
     report = CreditReport(rating=rating, source="simulated-bureau-v1", simulated=True)
-    decision = PointsGradingPolicy().grade(auction(), ACTIVE_COMPANY, report, TODAY)
+    decision = PointsGradingPolicy().grade(auction(), ACTIVE_COMPANY, report, NO_NEWS, TODAY)
     factor = next(f for f in decision.factors if f.code == code)
     assert factor.points == points
     assert "simulado" in factor.detail
@@ -230,9 +244,65 @@ def test_the_credit_rating_only_ever_takes_points(rating: SbsRating, code: str, 
 
 def test_a_sanction_list_never_loaded_leaves_a_note_and_no_points() -> None:
     decision = PointsGradingPolicy().grade(
-        auction(), standing(unavailable_sources=("oece-multas",)), None, TODAY
+        auction(), standing(unavailable_sources=("oece-multas",)), None, NO_NEWS, TODAY
     )
     [note] = [f for f in decision.factors if f.code == "SOURCE_UNAVAILABLE"]
     assert note.points == 0
     assert "OECE" in note.detail
+    assert decision.score == 65
+
+
+def news(*severities: NewsSeverity) -> NewsCheck:
+    findings = tuple(
+        NewsFinding(
+            category=(
+                NewsCategory.FRAUD if severity is NewsSeverity.SERIOUS else NewsCategory.NON_PAYMENT_LITIGATION
+            ),
+            severity=severity,
+            headline=f"Titular {n}",
+            url=f"https://diario.pe/nota-{n}",
+            published_on=None,
+            summary="Resumen.",
+        )
+        for n, severity in enumerate(severities)
+    )
+    screening = NewsScreening("20123456789", findings, datetime(2026, 10, 14, tzinfo=UTC), "gpt-6-luna", 5)
+    return NewsCheck(NewsCheckStatus.SCREENED, screening)
+
+
+def news_codes(check: NewsCheck) -> dict[str, int]:
+    decision = PointsGradingPolicy().grade(auction(), ACTIVE_COMPANY, None, check, TODAY)
+    return {f.code: f.points for f in decision.factors if f.code.startswith("NE")}
+
+
+def test_serious_news_takes_twenty_points_however_many() -> None:
+    assert news_codes(news(NewsSeverity.SERIOUS, NewsSeverity.SERIOUS)) == {"NEGATIVE_NEWS_SERIOUS": -20}
+
+
+def test_serious_and_moderate_news_never_take_more_than_thirty() -> None:
+    codes = news_codes(news(NewsSeverity.SERIOUS, NewsSeverity.MODERATE, NewsSeverity.MODERATE))
+    assert codes == {"NEGATIVE_NEWS_SERIOUS": -20, "NEGATIVE_NEWS_MODERATE": -10}
+
+
+def test_news_detail_shows_two_headlines_with_their_links() -> None:
+    decision = PointsGradingPolicy().grade(
+        auction(), ACTIVE_COMPANY, None, news(NewsSeverity.SERIOUS, NewsSeverity.SERIOUS, NewsSeverity.SERIOUS), TODAY
+    )
+    detail = next(f.detail for f in decision.factors if f.code == "NEGATIVE_NEWS_SERIOUS")
+    assert "https://diario.pe/nota-0" in detail and "https://diario.pe/nota-1" in detail
+    assert "y 1 más" in detail and "IA" in detail
+
+
+def test_negative_news_never_rejects() -> None:
+    decision = PointsGradingPolicy().grade(auction(), ACTIVE_COMPANY, None, news(NewsSeverity.SERIOUS), TODAY)
+    assert decision.eligible is True
+
+
+@pytest.mark.parametrize(
+    ("status", "code"),
+    [(NewsCheckStatus.UNAVAILABLE, "NEWS_UNAVAILABLE"), (NewsCheckStatus.NOT_SCREENED, "NEWS_NOT_SCREENED")],
+)
+def test_a_missing_news_check_only_leaves_a_note(status: NewsCheckStatus, code: str) -> None:
+    decision = PointsGradingPolicy().grade(auction(), ACTIVE_COMPANY, None, NewsCheck(status), TODAY)
+    assert next(f.points for f in decision.factors if f.code == code) == 0
     assert decision.score == 65
