@@ -52,3 +52,15 @@ class RiskAssessmentModel(AuditableModel, Base):
     last_delivery_error: Mapped[str | None] = mapped_column(String(500))
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     investment_auction_status: Mapped[str | None] = mapped_column(String(40))
+
+
+class NewsScreeningModel(Base):
+    """The ``news_screenings`` table: the latest web search for negative news, one row per payer."""
+
+    __tablename__ = "news_screenings"
+
+    ruc: Mapped[str] = mapped_column(String(11), primary_key=True)
+    screened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    model: Mapped[str] = mapped_column(String(80))
+    sources_consulted: Mapped[int] = mapped_column(Integer)
+    findings: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, server_default=text("'[]'::jsonb"))

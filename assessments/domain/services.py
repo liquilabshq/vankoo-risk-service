@@ -18,13 +18,17 @@ from assessments.domain.value_objects import (
     AuctionFacts,
     CreditReport,
     GradingDecision,
+    NewsCheck,
+    NewsCheckStatus,
+    NewsFinding,
+    NewsSeverity,
     PayerStanding,
     RiskGrade,
     SbsRating,
     ScoreFactor,
 )
 
-POINTS_POLICY_VERSION = "points-v2"
+POINTS_POLICY_VERSION = "points-v3"
 BASE_SCORE = 40
 GRADE_A_FROM = 75
 GRADE_B_FROM = 55
@@ -42,6 +46,11 @@ CREDIT_RATING_POINTS = {
     SbsRating.DOUBTFUL: ("CREDIT_RATING_DOUBTFUL", -30, "Dudoso"),
     SbsRating.LOSS: ("CREDIT_RATING_LOSS", -40, "Pérdida"),
 }
+
+# At most -30 in all: one serious factor and one moderate, however many pieces of news.
+NEWS_SERIOUS_POINTS = -20
+NEWS_MODERATE_POINTS = -10
+NEWS_HEADLINES_SHOWN = 2
 
 SOURCE_NAMES = {
     "sunat-ssco": "lista de SUNAT de sujetos sin capacidad operativa",
@@ -74,7 +83,12 @@ class RiskGradingPolicy(ABC):
 
     @abstractmethod
     def grade(
-        self, facts: AuctionFacts, standing: PayerStanding, credit: CreditReport | None, today: date
+        self,
+        facts: AuctionFacts,
+        standing: PayerStanding,
+        credit: CreditReport | None,
+        news: NewsCheck,
+        today: date,
     ) -> GradingDecision:
         """Grade an auction.
 
@@ -82,6 +96,7 @@ class RiskGradingPolicy(ABC):
             facts (AuctionFacts): What Investment published about the auction.
             standing (PayerStanding): What the public registries say about the payer.
             credit (CreditReport | None): What a credit bureau reports, if one was asked.
+            news (NewsCheck): Negative news found about the payer on the web, if checked.
             today (date): The day of the assessment, to count the days to the due
                 date and to tell which sanctions are in force.
 
@@ -99,13 +114,19 @@ class PointsGradingPolicy(RiskGradingPolicy):
     IGV withholding or perception agent, the address condition, company or
     individual, whether the invoice names the payer as SUNAT does, the days
     left to the due date, debt in coactive collection, OECE sanctions, OEFA
-    offences and the credit rating. 75 or more is A, 55 or more is B, the rest
-    is C. While the padrón has never been loaded, every auction is C, never
+    offences, the credit rating and negative news (never more than -30). 75 or
+    more is A, 55 or more is B, the rest is C. News never rejects: an automated
+    search can mistake a namesake or misread a page. While the padrón has never been loaded, every auction is C, never
     rejected for lack of data; a sanction list never loaded only leaves a note.
     """
 
     def grade(
-        self, facts: AuctionFacts, standing: PayerStanding, credit: CreditReport | None, today: date
+        self,
+        facts: AuctionFacts,
+        standing: PayerStanding,
+        credit: CreditReport | None,
+        news: NewsCheck,
+        today: date,
     ) -> GradingDecision:
         ruc = facts.payer.ruc.value
         if not standing.registry_loaded:
@@ -136,6 +157,7 @@ class PointsGradingPolicy(RiskGradingPolicy):
             self._term_factor((facts.due_date - today).days),
             *self._sanction_factors(standing, today),
             *self._credit_factors(credit),
+            *self._news_factors(news),
             *self._unavailable_source_factors(standing),
         ]
         score = BASE_SCORE + sum(factor.points for factor in factors)
@@ -218,6 +240,21 @@ class PointsGradingPolicy(RiskGradingPolicy):
         return [ScoreFactor(code, points, f"Calificación SBS «{label}» según la {source}.")]
 
     @staticmethod
+    def _news_factors(news: NewsCheck) -> list[ScoreFactor]:
+        if news.status is NewsCheckStatus.NOT_SCREENED:
+            return [ScoreFactor("NEWS_NOT_SCREENED", 0, "No se buscaron noticias del pagador: búsqueda apagada.")]
+        if news.status is NewsCheckStatus.UNAVAILABLE or news.screening is None:
+            return [ScoreFactor("NEWS_UNAVAILABLE", 0, "La búsqueda de noticias del pagador no respondió.")]
+        serious = [f for f in news.screening.findings if f.severity is NewsSeverity.SERIOUS]
+        moderate = [f for f in news.screening.findings if f.severity is NewsSeverity.MODERATE]
+        factors = []
+        if serious:
+            factors.append(ScoreFactor("NEGATIVE_NEWS_SERIOUS", NEWS_SERIOUS_POINTS, _headlines(serious)))
+        if moderate:
+            factors.append(ScoreFactor("NEGATIVE_NEWS_MODERATE", NEWS_MODERATE_POINTS, _headlines(moderate)))
+        return factors
+
+    @staticmethod
     def _unavailable_source_factors(standing: PayerStanding) -> list[ScoreFactor]:
         return [
             ScoreFactor(
@@ -274,6 +311,12 @@ class PointsGradingPolicy(RiskGradingPolicy):
         if days <= 90:
             return ScoreFactor("TERM_61_TO_90_DAYS", 0, f"Vence en {days} días.")
         return ScoreFactor("TERM_OVER_90_DAYS", -10, f"Vence en {days} días.")
+
+
+def _headlines(findings: list[NewsFinding]) -> str:
+    shown = "; ".join(f"«{f.headline}» ({f.url})" for f in findings[:NEWS_HEADLINES_SHOWN])
+    more = f" y {len(findings) - NEWS_HEADLINES_SHOWN} más" if len(findings) > NEWS_HEADLINES_SHOWN else ""
+    return f"Según búsqueda automática (IA): {shown}{more}."
 
 
 def _soles(amount: Decimal) -> str:

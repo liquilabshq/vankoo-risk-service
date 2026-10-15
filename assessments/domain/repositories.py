@@ -8,7 +8,7 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 
 from assessments.domain.entities import RiskAssessment
-from assessments.domain.value_objects import AuctionId
+from assessments.domain.value_objects import AuctionId, NewsScreening
 
 
 class RiskAssessmentRepository(ABC):
@@ -34,3 +34,15 @@ class RiskAssessmentRepository(ABC):
             now (datetime): The current time, in UTC.
             limit (int): The most assessments to return.
         """
+
+
+class NewsScreeningRepository(ABC):
+    """The latest news search for each payer, so the same payer is not searched again for a while."""
+
+    @abstractmethod
+    async def find_since(self, ruc: str, since: datetime) -> NewsScreening | None:
+        """Return the payer's last search if it ran at ``since`` or later, else ``None``."""
+
+    @abstractmethod
+    async def save(self, screening: NewsScreening) -> None:
+        """Keep a search, replacing the payer's previous one."""

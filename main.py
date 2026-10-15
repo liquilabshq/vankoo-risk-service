@@ -26,7 +26,7 @@ from assessments.application.event_handlers import register_event_handlers as re
 from assessments.application.services import RiskAssessmentApplicationService
 from assessments.infrastructure.settings import investment_settings
 from assessments.interfaces.consumers import AuctionLifecycleConsumer
-from assessments.interfaces.dependencies import build_risk_assessment_service
+from assessments.interfaces.dependencies import build_news_screener, build_risk_assessment_service
 from assessments.interfaces.routes import router as assessments_router
 from assessments.interfaces.workers import EvaluationDeliveryWorker
 from registries.infrastructure.settings import registry_settings
@@ -54,9 +54,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         timeout=httpx.Timeout(investment_settings.read_timeout, connect=investment_settings.connect_timeout),
     )
     app.state.investment_client = investment_client
+    news_screener, news_client = build_news_screener()
+    app.state.news_screener = news_screener
+    logging.getLogger(__name__).info(
+        "News screening is %s", "on" if news_client is not None else "off (NEWS_ENABLED or OPENAI_API_KEY unset)"
+    )
 
     def build_service(session: AsyncSession) -> RiskAssessmentApplicationService:
-        return build_risk_assessment_service(session, investment_client)
+        return build_risk_assessment_service(session, investment_client, news_screener)
 
     worker = EvaluationDeliveryWorker(session_factory, build_service)
     consumer = AuctionLifecycleConsumer(kafka_settings, session_factory, build_service)
@@ -85,6 +90,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         for task in reversed(tasks):
             await task.stop()
         await investment_client.aclose()
+        if news_client is not None:
+            await news_client.close()
         await engine.dispose()
 
 

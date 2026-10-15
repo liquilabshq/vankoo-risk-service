@@ -4,13 +4,14 @@ The repository is the only place that knows both the aggregate and its table:
 it maps one to the other in both directions, so neither has to know about the
 other.
 """
-from datetime import datetime
+from datetime import date, datetime
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from assessments.domain.entities import RiskAssessment
-from assessments.domain.repositories import RiskAssessmentRepository
+from assessments.domain.repositories import NewsScreeningRepository, RiskAssessmentRepository
 from assessments.domain.value_objects import (
     AssessmentId,
     AuctionFacts,
@@ -19,12 +20,16 @@ from assessments.domain.value_objects import (
     DeliveryStatus,
     GradingDecision,
     Money,
+    NewsCategory,
+    NewsFinding,
+    NewsScreening,
+    NewsSeverity,
     Payer,
     RiskGrade,
     Ruc,
     ScoreFactor,
 )
-from assessments.infrastructure.models import RiskAssessmentModel
+from assessments.infrastructure.models import NewsScreeningModel, RiskAssessmentModel
 
 
 class SqlAlchemyRiskAssessmentRepository(RiskAssessmentRepository):
@@ -135,3 +140,62 @@ class SqlAlchemyRiskAssessmentRepository(RiskAssessmentRepository):
             investment_auction_status=model.investment_auction_status,
             id=model.id,
         )
+
+
+class SqlAlchemyNewsScreeningRepository(NewsScreeningRepository):
+    """Keeps each payer's latest news search in the ``news_screenings`` table."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        """Initialize the repository on the unit of work's session.
+
+        Args:
+            session (AsyncSession): The session of the current unit of work.
+        """
+        self._session = session
+
+    async def find_since(self, ruc: str, since: datetime) -> NewsScreening | None:
+        model = await self._session.get(NewsScreeningModel, ruc)
+        if model is None or model.screened_at < since:
+            return None
+        return NewsScreening(
+            ruc=model.ruc,
+            findings=tuple(_finding_from_json(item) for item in model.findings or []),
+            screened_at=model.screened_at,
+            model=model.model,
+            sources_consulted=model.sources_consulted,
+        )
+
+    async def save(self, screening: NewsScreening) -> None:
+        await self._session.merge(
+            NewsScreeningModel(
+                ruc=screening.ruc,
+                screened_at=screening.screened_at,
+                model=screening.model,
+                sources_consulted=screening.sources_consulted,
+                findings=[_finding_to_json(finding) for finding in screening.findings],
+            )
+        )
+        await self._session.flush()
+
+
+def _finding_to_json(finding: NewsFinding) -> dict[str, Any]:
+    return {
+        "category": finding.category.value,
+        "severity": finding.severity.value,
+        "headline": finding.headline,
+        "url": finding.url,
+        "published_on": finding.published_on.isoformat() if finding.published_on else None,
+        "summary": finding.summary,
+    }
+
+
+def _finding_from_json(item: dict[str, Any]) -> NewsFinding:
+    published = item.get("published_on")
+    return NewsFinding(
+        category=NewsCategory(item["category"]),
+        severity=NewsSeverity(item["severity"]),
+        headline=str(item["headline"]),
+        url=str(item["url"]),
+        published_on=date.fromisoformat(published) if published else None,
+        summary=str(item.get("summary") or ""),
+    )

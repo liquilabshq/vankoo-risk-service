@@ -1,7 +1,8 @@
 """Outbound ports of the Assessments application layer.
 
 A credit bureau reports a payer's rating in the financial system through
-:class:`CreditBureau`; today the only adapter is a simulation.
+:class:`CreditBureau`; today the only adapter is a simulation. A
+:class:`NewsScreener` searches the web for negative news about a payer.
 
 The application service delivers each assessment to Investment through
 :class:`AuctionEvaluationService`. It does not know that the other side is an
@@ -13,7 +14,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 
-from assessments.domain.value_objects import CreditReport, Ruc
+from assessments.domain.value_objects import CreditReport, NewsScreening, Ruc
 
 
 class EvaluationOutcomeKind(StrEnum):
@@ -44,6 +45,30 @@ class CreditBureau(ABC):
     @abstractmethod
     async def report(self, ruc: Ruc) -> CreditReport | None:
         """Return the bureau's report on a payer, or ``None`` if there is none to give."""
+
+
+class NewsUnavailableError(Exception):
+    """The news search could not give an answer; the assessment goes on without it."""
+
+
+class NewsScreener(ABC):
+    """Searches the web for negative news about a payer (fraud, insolvency, lawsuits…)."""
+
+    @abstractmethod
+    async def screen(self, ruc: Ruc, name: str) -> NewsScreening | None:
+        """Search for negative news about a company.
+
+        Args:
+            ruc (Ruc): The payer's RUC.
+            name (str): Its name, as SUNAT registers it when known.
+
+        Returns:
+            NewsScreening | None: What was found (possibly nothing), or ``None``
+            if screening is turned off.
+
+        Raises:
+            NewsUnavailableError: If the search failed or its answer was unusable.
+        """
 
 
 class InvestmentUnavailableError(Exception):
