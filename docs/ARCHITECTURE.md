@@ -14,8 +14,8 @@ Dos contextos acotados, cada uno con las cuatro capas de la skill `ddd-fastapi`:
 | Capa | Qué hay |
 |---|---|
 | `domain/` | El agregado `RiskAssessment`, sus value objects (`Ruc`, `RiskGrade`, `PayerStanding`, `ScoreFactor`, `GradingDecision`…), el evento `RiskAssessmentIssued` y la política `PointsGradingPolicy` |
-| `application/` | `RiskAssessmentApplicationService` (evaluar, entregar, leer), el puerto `AuctionEvaluationService` hacia Investment (calificar o rechazar), el puerto `CreditBureau` (la central de riesgos) y `ExternalRegistriesService` (la ACL hacia `registries`) |
-| `infrastructure/` | Tablas, repositorio SQLAlchemy, el adaptador httpx de Investment y `SimulatedCreditBureau`, la única pieza **simulada** del servicio |
+| `application/` | `RiskAssessmentApplicationService` (evaluar, entregar, leer), el puerto `AuctionEvaluationService` hacia Investment (calificar o rechazar), el puerto `CreditBureau` (la central de riesgos), el puerto `NewsScreener` (noticias negativas) y `ExternalRegistriesService` (la ACL hacia `registries`) |
+| `infrastructure/` | Tablas, repositorio SQLAlchemy, el adaptador httpx de Investment y `SimulatedCreditBureau` (la única pieza **simulada** del servicio) y `OpenAINewsScreener` (búsqueda web con `gpt-6-luna`, con caché de 7 días en `news_screenings`) |
 | `interfaces/` | Consumidor de Kafka, repartidor, rutas REST y el parser del contrato |
 
 ### `registries`
@@ -101,4 +101,4 @@ El consumidor y el repartidor corren como tareas supervisadas dentro del `lifesp
 
 ## Lo que cambia en las fases siguientes
 
-Nuevas fuentes (noticias con un LLM, certificados verdes) entran como nuevos campos de `PayerStanding` o nuevos puertos, y nuevas reglas en la política. Ver [SCORING_RULES.md](SCORING_RULES.md).
+Nuevas fuentes (certificados verdes) entran como nuevos campos de `PayerStanding` o nuevos puertos, y nuevas reglas en la política. Ver [SCORING_RULES.md](SCORING_RULES.md).

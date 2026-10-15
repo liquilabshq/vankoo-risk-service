@@ -2,7 +2,7 @@
 
 Microservicio de evaluación de riesgo de Vankoo. Decide si la factura de cada subasta se puede financiar y, si se puede, la califica con **A, B o C** antes de que la MYPE pueda cotizarla. La decisión se la entrega a Investment.
 
-Califica al **pagador** con datos públicos (padrón de SUNAT, agentes de retención, sujetos sin capacidad operativa, deuda coactiva, sanciones de OECE y OEFA), una central de riesgos **simulada** y reglas de puntos explicables: ver [docs/SCORING_RULES.md](docs/SCORING_RULES.md).
+Califica al **pagador** con datos públicos (padrón de SUNAT, agentes de retención, sujetos sin capacidad operativa, deuda coactiva, sanciones de OECE y OEFA), noticias en internet leídas por IA (OpenAI), una central de riesgos **simulada** y reglas de puntos explicables: ver [docs/SCORING_RULES.md](docs/SCORING_RULES.md).
 
 ## Qué hace
 
@@ -99,6 +99,11 @@ No se rutea por el gateway todavía.
 | `REGISTRY_AGENTS_URL_TEMPLATE` | el ZIP mensual de datos abiertos | Dónde está el padrón de agentes (`{period}` = `YYYYMM`) |
 | `REGISTRY_SHELL_COMPANIES_URL`, `REGISTRY_COACTIVE_DEBTORS_URL`, `REGISTRY_OECE_DISQUALIFICATIONS_URL`, `REGISTRY_OECE_FINES_URL`, `REGISTRY_ENVIRONMENTAL_OFFENDERS_URL` | las de SUNAT, OECE y OEFA | Dónde están las listas de sanciones |
 | `CREDIT_BUREAU_ENABLED` | `true` | Consultar la central de riesgos **simulada** |
+| `OPENAI_API_KEY` | — | Clave de OpenAI para buscar noticias; sin ella el paso se salta (nunca se registra en logs) |
+| `NEWS_ENABLED` | `true` | Buscar noticias negativas del pagador |
+| `NEWS_MODEL` | `gpt-6-luna` | Modelo de OpenAI que busca y lee |
+| `NEWS_MAX_SEARCHES` | `5` | Búsquedas como máximo por pagador (cada una cuesta unos $0,01) |
+| `NEWS_CACHE_DAYS` | `7` | Cuánto se reutiliza la búsqueda de un pagador |
 | `DOCS_ENABLED` | `true` | Servir `/docs` |
 
 ## Pruebas
@@ -109,7 +114,7 @@ uv run mypy .
 uv run pytest
 ```
 
-Los tests usan dobles en memoria: no necesitan PostgreSQL ni Kafka.
+Los tests usan dobles en memoria: no necesitan PostgreSQL, Kafka ni una clave de OpenAI (las respuestas de OpenAI se simulan).
 
 ## Información adicional
 

@@ -1,4 +1,4 @@
-# Reglas de calificación (`points-v2`)
+# Reglas de calificación (`points-v3`)
 
 La política es `PointsGradingPolicy` (`assessments/domain/services.py`). Cada evaluación guarda sus factores con código, puntos y detalle, y los devuelve `GET /api/v1/risk-assessments/{auctionId}`. Así cualquier nota se puede explicar.
 
@@ -13,6 +13,7 @@ La política es `PointsGradingPolicy` (`assessments/domain/services.py`). Cada e
 | Proveedores inhabilitados y multados (OECE, ex OSCE) | Inhabilitaciones con sus fechas; multas impagas (las pagadas salen de la lista) | Semanal |
 | Infractores ambientales, RUIAS (OEFA) | Infracciones sancionadas en los últimos 5 años | Según OEFA (la última, noviembre de 2025) |
 | Central de riesgos **simulada** | Calificación SBS (Normal, CPP, Deficiente, Dudoso, Pérdida) | En cada evaluación |
+| Noticias en internet, leídas por IA (OpenAI `gpt-6-luna` con búsqueda web) | Fraude, quiebra, corrupción, juicios por impago, sanciones ambientales | Una búsqueda por pagador cada 7 días |
 | La subasta (`AuctionCreated`) | RUC y nombre del pagador según la factura, vencimiento | En cada evento |
 
 SUNAFIL no publica ningún archivo descargable de empresas sancionadas, así que no se usa.
@@ -56,6 +57,10 @@ La subasta pasa a `REJECTED` en Investment con el código y el motivo, y la MYPE
 | `CREDIT_RATING_DOUBTFUL` | −30 | Central simulada: Dudoso |
 | `CREDIT_RATING_LOSS` | −40 | Central simulada: Pérdida (nunca rechaza) |
 | `SOURCE_UNAVAILABLE` | 0 | Una lista de sanciones que nunca se cargó: queda la constancia |
+| `NEGATIVE_NEWS_SERIOUS` | −20 | Al menos una noticia de fraude, quiebra o corrupción |
+| `NEGATIVE_NEWS_MODERATE` | −10 | Al menos una de juicios por impago, ambiental u otra |
+| `NEWS_UNAVAILABLE` | 0 | La búsqueda de noticias falló: queda la constancia |
+| `NEWS_NOT_SCREENED` | 0 | La búsqueda está apagada o no hay `OPENAI_API_KEY` |
 
 Para comparar nombres se pasan a mayúsculas y se quitan tildes, puntuación y la forma societaria (S.A.C., S.R.L., E.I.R.L., «Sociedad Anónima Cerrada»…). Así «Pagador S.A.C.» y «PAGADOR SOCIEDAD ANONIMA CERRADA» coinciden.
 
@@ -74,6 +79,16 @@ Ejemplos:
 - Nombre que no coincide: **45 → C**.
 - Empresa habida típica con calificación CPP: **55 → B**; si además tiene deuda coactiva: **35 → C**.
 
+## Las noticias las busca una IA, pero no pone la nota
+
+`OpenAINewsScreener` (`assessments/infrastructure/news.py`) hace una sola llamada a la Responses API de OpenAI con `gpt-6-luna`, su herramienta `web_search` (hasta 5 búsquedas, ubicación Perú) y una respuesta con esquema fijo: una lista de hallazgos con categoría, gravedad, titular, URL, fecha y resumen. Costo verificado el 15 oct 2026: $0,10 / $0,50 por millón de tokens y $10 por 1.000 búsquedas, o sea unos **$0,05 por pagador**.
+
+- **Las instrucciones** tratan cada página como dato, nunca como órdenes, y piden solo noticias claramente sobre esa empresa (mismo RUC o misma razón social) de los últimos 5 años.
+- **Después se valida**: un hallazgo cuya URL no está entre las páginas que la búsqueda consultó de verdad se descarta; así un enlace inventado nunca llega a la nota. Una respuesta que no cumple el esquema cuenta como «no respondió».
+- **Nunca rechaza y nunca pasa de −30**: una búsqueda automática puede confundir homónimos o leer mal una página.
+- **Caché de 7 días por RUC** (tabla `news_screenings`): el mismo pagador no se vuelve a buscar en ese plazo, haya encontrado algo o no.
+- **Sin clave** (`OPENAI_API_KEY`) o con `NEWS_ENABLED=false`, el paso se salta y queda `NEWS_NOT_SCREENED`.
+
 ## La central de riesgos es SIMULADA
 
 Vankoo no tiene contrato con una central (Equifax/Infocorp, Sentinel…). Además, una plataforma de financiamiento participativo la supervisa la SMV y no tiene acceso directo al reporte consolidado de la SBS.
@@ -88,4 +103,4 @@ Mientras el padrón no se haya cargado nunca, cada subasta sale **C** con el fac
 
 ## Cambiar las reglas
 
-Se escribe una política nueva (o una versión nueva, `points-v3`) en `assessments/domain/services.py`, con sus tests, y se devuelve en `build_grading_policy()`. Las evaluaciones ya emitidas conservan su `grading_policy`.
+Se escribe una política nueva (o una versión nueva, `points-v4`) en `assessments/domain/services.py`, con sus tests, y se devuelve en `build_grading_policy()`. Las evaluaciones ya emitidas conservan su `grading_policy`.
