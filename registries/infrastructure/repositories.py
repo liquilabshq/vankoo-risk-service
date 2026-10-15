@@ -3,9 +3,31 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from registries.domain.entities import RegistrySnapshot
-from registries.domain.repositories import RegistrySnapshotRepository, TaxpayerRepository, WithholdingAgentRepository
-from registries.domain.value_objects import AgentType, RegistrySource, TaxpayerRecord
-from registries.infrastructure.models import RegistrySnapshotModel, TaxpayerModel, WithholdingAgentModel
+from registries.domain.repositories import (
+    RegistrySnapshotRepository,
+    SanctionListRepository,
+    TaxpayerRepository,
+    WithholdingAgentRepository,
+)
+from registries.domain.value_objects import (
+    AgentType,
+    CoactiveDebtorRecord,
+    EnvironmentalOffenderRecord,
+    OeceSanctionRecord,
+    RegistrySource,
+    ShellCompanyRecord,
+    TaxpayerRecord,
+)
+from registries.infrastructure.models import (
+    CoactiveDebtorModel,
+    EnvironmentalOffenderModel,
+    OeceDisqualificationModel,
+    OeceFineModel,
+    RegistrySnapshotModel,
+    ShellCompanyModel,
+    TaxpayerModel,
+    WithholdingAgentModel,
+)
 
 
 class SqlAlchemyTaxpayerRepository(TaxpayerRepository):
@@ -44,6 +66,50 @@ class SqlAlchemyWithholdingAgentRepository(WithholdingAgentRepository):
             .order_by(WithholdingAgentModel.agent_type)
         )
         return [AgentType(value) for value in rows if value in AgentType.__members__.values()]
+
+
+class SqlAlchemySanctionListRepository(SanctionListRepository):
+    """Reads the sanction-list tables."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        """Initialize the repository on the unit of work's session.
+
+        Args:
+            session (AsyncSession): The session of the current unit of work.
+        """
+        self._session = session
+
+    async def find_shell_company(self, ruc: str) -> ShellCompanyRecord | None:
+        model = await self._session.get(ShellCompanyModel, ruc)
+        if model is None:
+            return None
+        return ShellCompanyRecord(
+            model.ruc, model.name, model.resolution, model.resolution_date, model.final_date, model.published_on
+        )
+
+    async def find_coactive_debtor(self, ruc: str) -> CoactiveDebtorRecord | None:
+        model = await self._session.get(CoactiveDebtorModel, ruc)
+        return CoactiveDebtorRecord(model.ruc, model.name, model.debt_amount) if model else None
+
+    async def find_oece_disqualifications(self, ruc: str) -> list[OeceSanctionRecord]:
+        models = await self._session.scalars(
+            select(OeceDisqualificationModel).where(OeceDisqualificationModel.ruc == ruc)
+        )
+        return [
+            OeceSanctionRecord(m.ruc, m.resolution, m.starts_on, m.ends_on, m.reason, None) for m in models
+        ]
+
+    async def find_oece_fines(self, ruc: str) -> list[OeceSanctionRecord]:
+        models = await self._session.scalars(select(OeceFineModel).where(OeceFineModel.ruc == ruc))
+        return [
+            OeceSanctionRecord(m.ruc, m.resolution, m.starts_on, m.ends_on, m.reason, m.amount) for m in models
+        ]
+
+    async def find_environmental_offender(self, ruc: str) -> EnvironmentalOffenderRecord | None:
+        model = await self._session.get(EnvironmentalOffenderModel, ruc)
+        if model is None:
+            return None
+        return EnvironmentalOffenderRecord(model.ruc, model.name, model.subsector, model.infractions, model.fine_uit)
 
 
 class SqlAlchemyRegistrySnapshotRepository(RegistrySnapshotRepository):

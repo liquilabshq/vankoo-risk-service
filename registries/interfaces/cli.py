@@ -1,6 +1,7 @@
 """Command line of the Registries context: ``python -m registries refresh``.
 
-Refreshing the padrón streams a 1.6 GB file into PostgreSQL, which keeps a
+Refreshing the padrón streams a 1.6 GB file into PostgreSQL (the sanction
+lists are small), which keeps a
 CPU busy for minutes. It runs as its own process, never inside the API's event
 loop: by hand, or launched by the scheduler as a subprocess.
 """
@@ -26,7 +27,15 @@ from shared.infrastructure.database import engine, session_factory
 
 logger = logging.getLogger("registries")
 
-SOURCES = {"taxpayers": RegistrySource.TAXPAYERS, "agents": RegistrySource.WITHHOLDING_AGENTS}
+SOURCES = {
+    "taxpayers": RegistrySource.TAXPAYERS,
+    "agents": RegistrySource.WITHHOLDING_AGENTS,
+    "shell-companies": RegistrySource.SHELL_COMPANIES,
+    "coactive-debtors": RegistrySource.COACTIVE_DEBTORS,
+    "oece-disqualifications": RegistrySource.OECE_DISQUALIFICATIONS,
+    "oece-fines": RegistrySource.OECE_FINES,
+    "environmental-offenders": RegistrySource.ENVIRONMENTAL_OFFENDERS,
+}
 
 
 async def refresh(sources: list[RegistrySource], settings: RegistrySettings, *, force: bool) -> int:

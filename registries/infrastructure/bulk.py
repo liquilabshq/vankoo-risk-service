@@ -1,6 +1,6 @@
 """Bulk replacement of a registry table, for PostgreSQL.
 
-A refresh writes millions of rows, far too many for the ORM. The file is
+A refresh writes up to millions of rows (the padrón), far too many for the ORM. The file is
 streamed into a new table with ``COPY`` (asyncpg's ``copy_records_to_table``),
 in batches that pass through a temporary table so that a repeated key is
 skipped instead of failing the whole load. When every row is in, the new table
@@ -17,8 +17,23 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from registries.application.outbound_services import LoadResult, RegistryWriter
-from registries.domain.value_objects import AgentRecord, RegistrySource, TaxpayerRecord
-from registries.infrastructure.parsers import read_agents, read_taxpayers
+from registries.domain.value_objects import (
+    AgentRecord,
+    CoactiveDebtorRecord,
+    EnvironmentalOffenderRecord,
+    OeceSanctionRecord,
+    RegistrySource,
+    ShellCompanyRecord,
+    TaxpayerRecord,
+)
+from registries.infrastructure.parsers import (
+    read_agents,
+    read_coactive_debtors,
+    read_environmental_offenders,
+    read_oece_sanctions,
+    read_shell_companies,
+    read_taxpayers,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +52,19 @@ TAXPAYERS = _TableSpec("taxpayers", ("ruc", "name", "status", "domicile_conditio
 WITHHOLDING_AGENTS = _TableSpec(
     "withholding_agents", ("ruc", "agent_type", "since", "resolution"), ("ruc", "agent_type")
 )
+SHELL_COMPANIES = _TableSpec(
+    "shell_companies", ("ruc", "name", "resolution", "resolution_date", "final_date", "published_on"), ("ruc",)
+)
+COACTIVE_DEBTORS = _TableSpec("coactive_debtors", ("ruc", "name", "debt_amount"), ("ruc",))
+OECE_DISQUALIFICATIONS = _TableSpec(
+    "oece_disqualifications", ("ruc", "resolution", "starts_on", "ends_on", "reason"), ("ruc", "resolution")
+)
+OECE_FINES = _TableSpec(
+    "oece_fines", ("ruc", "resolution", "starts_on", "ends_on", "reason", "amount"), ("ruc", "resolution")
+)
+ENVIRONMENTAL_OFFENDERS = _TableSpec(
+    "environmental_offenders", ("ruc", "name", "subsector", "infractions", "fine_uit"), ("ruc",)
+)
 
 
 class PostgresRegistryWriter(RegistryWriter):
@@ -53,9 +81,25 @@ class PostgresRegistryWriter(RegistryWriter):
         self._batch_size = batch_size
 
     async def replace(self, source: RegistrySource, file: Path) -> LoadResult:
-        if source is RegistrySource.TAXPAYERS:
-            return await self._replace(TAXPAYERS, (_taxpayer_row(record) for record in read_taxpayers(file)))
-        return await self._replace(WITHHOLDING_AGENTS, (_agent_row(record) for record in read_agents(file)))
+        match source:
+            case RegistrySource.TAXPAYERS:
+                return await self._replace(TAXPAYERS, map(_taxpayer_row, read_taxpayers(file)))
+            case RegistrySource.WITHHOLDING_AGENTS:
+                return await self._replace(WITHHOLDING_AGENTS, map(_agent_row, read_agents(file)))
+            case RegistrySource.SHELL_COMPANIES:
+                return await self._replace(SHELL_COMPANIES, map(_shell_company_row, read_shell_companies(file)))
+            case RegistrySource.COACTIVE_DEBTORS:
+                return await self._replace(COACTIVE_DEBTORS, map(_coactive_debtor_row, read_coactive_debtors(file)))
+            case RegistrySource.OECE_DISQUALIFICATIONS:
+                return await self._replace(
+                    OECE_DISQUALIFICATIONS, map(_disqualification_row, read_oece_sanctions(file))
+                )
+            case RegistrySource.OECE_FINES:
+                return await self._replace(OECE_FINES, map(_fine_row, read_oece_sanctions(file)))
+            case RegistrySource.ENVIRONMENTAL_OFFENDERS:
+                return await self._replace(
+                    ENVIRONMENTAL_OFFENDERS, map(_offender_row, read_environmental_offenders(file))
+                )
 
     async def _replace(self, table: _TableSpec, rows: Iterable[tuple[Any, ...] | None]) -> LoadResult:
         connection = await (await self._session.connection()).get_raw_connection()
@@ -115,3 +159,40 @@ def _agent_row(record: AgentRecord | None) -> tuple[Any, ...] | None:
     if record is None:
         return None
     return (record.ruc, record.agent_type.value, record.since, record.resolution)
+
+
+def _shell_company_row(record: ShellCompanyRecord | None) -> tuple[Any, ...] | None:
+    if record is None:
+        return None
+    return (
+        record.ruc,
+        record.name,
+        record.resolution,
+        record.resolution_date,
+        record.final_date,
+        record.published_on,
+    )
+
+
+def _coactive_debtor_row(record: CoactiveDebtorRecord | None) -> tuple[Any, ...] | None:
+    if record is None:
+        return None
+    return (record.ruc, record.name, record.debt_amount)
+
+
+def _disqualification_row(record: OeceSanctionRecord | None) -> tuple[Any, ...] | None:
+    if record is None:
+        return None
+    return (record.ruc, record.resolution, record.starts_on, record.ends_on, record.reason)
+
+
+def _fine_row(record: OeceSanctionRecord | None) -> tuple[Any, ...] | None:
+    if record is None:
+        return None
+    return (record.ruc, record.resolution, record.starts_on, record.ends_on, record.reason, record.amount)
+
+
+def _offender_row(record: EnvironmentalOffenderRecord | None) -> tuple[Any, ...] | None:
+    if record is None:
+        return None
+    return (record.ruc, record.name, record.subsector, record.infractions, record.fine_uit)
