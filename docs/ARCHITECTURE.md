@@ -5,7 +5,7 @@
 Dos contextos acotados, cada uno con las cuatro capas de la skill `ddd-fastapi`:
 
 - `assessments` decide sobre cada subasta.
-- `registries` guarda la copia local de los padrones de SUNAT.
+- `registries` guarda la copia local de los padrones de SUNAT y de las listas de sanciones (SUNAT, OECE, OEFA).
 
 `assessments` le pregunta a `registries` solo por su fachada (`registries/interfaces/acl.py`), a través de `assessments/application/acl.py`, que es el único módulo que la importa.
 
@@ -14,17 +14,17 @@ Dos contextos acotados, cada uno con las cuatro capas de la skill `ddd-fastapi`:
 | Capa | Qué hay |
 |---|---|
 | `domain/` | El agregado `RiskAssessment`, sus value objects (`Ruc`, `RiskGrade`, `PayerStanding`, `ScoreFactor`, `GradingDecision`…), el evento `RiskAssessmentIssued` y la política `PointsGradingPolicy` |
-| `application/` | `RiskAssessmentApplicationService` (evaluar, entregar, leer), el puerto `AuctionEvaluationService` hacia Investment (calificar o rechazar) y `ExternalRegistriesService` (la ACL hacia `registries`) |
-| `infrastructure/` | Tablas, repositorio SQLAlchemy y el adaptador httpx de Investment |
+| `application/` | `RiskAssessmentApplicationService` (evaluar, entregar, leer), el puerto `AuctionEvaluationService` hacia Investment (calificar o rechazar), el puerto `CreditBureau` (la central de riesgos) y `ExternalRegistriesService` (la ACL hacia `registries`) |
+| `infrastructure/` | Tablas, repositorio SQLAlchemy, el adaptador httpx de Investment y `SimulatedCreditBureau`, la única pieza **simulada** del servicio |
 | `interfaces/` | Consumidor de Kafka, repartidor, rutas REST y el parser del contrato |
 
 ### `registries`
 
 | Capa | Qué hay |
 |---|---|
-| `domain/` | `RegistrySnapshot` (qué versión de cada padrón está cargada), `TaxpayerRecord`, `AgentRecord` |
+| `domain/` | `RegistrySnapshot` (qué versión de cada fuente está cargada) y un registro por fuente (`TaxpayerRecord`, `AgentRecord`, `ShellCompanyRecord`, `CoactiveDebtorRecord`, `OeceSanctionRecord`, `EnvironmentalOffenderRecord`) |
 | `application/` | `RegistryRefreshService`: compara la versión publicada (`Last-Modified`) con la cargada y, si cambió, descarga y reemplaza |
-| `infrastructure/` | Lectores de los archivos de SUNAT (`parsers.py`), descarga con httpx y carga masiva con `COPY` e intercambio atómico de tablas (`bulk.py`) |
+| `infrastructure/` | Lectores de cada formato (`parsers.py`: TXT latin-1, CSV, XLSX, JSON), descarga con httpx y carga masiva con `COPY` e intercambio atómico de tablas (`bulk.py`) |
 | `interfaces/` | La fachada para `assessments`, el comando `python -m registries refresh` y el programador diario |
 
 La carga del padrón (1,6 GB, unos 18 M de filas) corre siempre en **otro proceso**, nunca en el bucle de eventos de la API. Escribe en una tabla nueva y la intercambia por la vieja en la misma transacción: hasta el commit se sigue leyendo la copia anterior, y si algo falla queda intacta.
@@ -101,4 +101,4 @@ El consumidor y el repartidor corren como tareas supervisadas dentro del `lifesp
 
 ## Lo que cambia en las fases siguientes
 
-Nuevas fuentes (sancionados, listas especiales de SUNAT, central de riesgos simulada, noticias) entran como nuevos campos de `PayerStanding` o nuevos puertos, y nuevas reglas en la política. Ver [SCORING_RULES.md](SCORING_RULES.md).
+Nuevas fuentes (noticias con un LLM, certificados verdes) entran como nuevos campos de `PayerStanding` o nuevos puertos, y nuevas reglas en la política. Ver [SCORING_RULES.md](SCORING_RULES.md).
