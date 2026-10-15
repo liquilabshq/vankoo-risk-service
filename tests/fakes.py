@@ -7,6 +7,7 @@ from typing import Any, cast
 from assessments.application.acl import ExternalRegistriesService
 from assessments.application.outbound_services import (
     AuctionEvaluationService,
+    CreditBureau,
     EvaluationOutcome,
     InvestmentUnavailableError,
 )
@@ -17,6 +18,7 @@ from assessments.domain.services import PointsGradingPolicy
 from assessments.domain.value_objects import (
     AuctionFacts,
     AuctionId,
+    CreditReport,
     Currency,
     DeliveryStatus,
     GradingDecision,
@@ -181,6 +183,18 @@ class FakeRegistriesFacade:
         return self.standing
 
 
+class FixedCreditBureau(CreditBureau):
+    """Reports the same thing for every payer; nothing by default."""
+
+    def __init__(self, report: CreditReport | None = None) -> None:
+        self.fixed = report
+        self.asked: list[str] = []
+
+    async def report(self, ruc: Ruc) -> CreditReport | None:
+        self.asked.append(ruc.value)
+        return self.fixed
+
+
 class Clock:
     """A clock the test moves by hand."""
 
@@ -204,12 +218,15 @@ class ServiceUnderTest:
     unit_of_work: FakeUnitOfWork
     evaluations: StubEvaluationService
     registries: FakeRegistriesFacade
+    credit_bureau: FixedCreditBureau
     event_bus: EventBus
     clock: Clock
 
 
 def build_service(
-    evaluations: StubEvaluationService | None = None, standing: PayerStandingRecord = ACTIVE_COMPANY
+    evaluations: StubEvaluationService | None = None,
+    standing: PayerStandingRecord = ACTIVE_COMPANY,
+    credit: CreditReport | None = None,
 ) -> ServiceUnderTest:
     """Wire the application service to fresh fakes and the points policy."""
     repository = InMemoryRiskAssessmentRepository()
@@ -217,19 +234,21 @@ def build_service(
     unit_of_work = FakeUnitOfWork()
     stub = evaluations or StubEvaluationService()
     registries = FakeRegistriesFacade(standing)
+    credit_bureau = FixedCreditBureau(credit)
     bus = EventBus()
     clock = Clock()
     service = RiskAssessmentApplicationService(
         repository,
         inbox,
         ExternalRegistriesService(cast(Any, registries)),
+        credit_bureau,
         stub,
         PointsGradingPolicy(),
         unit_of_work,
         bus,
         clock,
     )
-    return ServiceUnderTest(service, repository, inbox, unit_of_work, stub, registries, bus, clock)
+    return ServiceUnderTest(service, repository, inbox, unit_of_work, stub, registries, credit_bureau, bus, clock)
 
 
 def graded(grade: RiskGrade = RiskGrade.B) -> GradingDecision:
@@ -240,7 +259,7 @@ def graded(grade: RiskGrade = RiskGrade.B) -> GradingDecision:
         score=60,
         factors=(ScoreFactor("DOMICILE_FOUND", 10, "Domicilio fiscal HABIDO en SUNAT."),),
         full_balance_outstanding=True,
-        policy_version="points-v1",
+        policy_version="points-v2",
     )
 
 

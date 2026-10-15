@@ -136,3 +136,39 @@ def test_the_scheduler_waits_until_the_next_refresh_hour() -> None:
     lima = ZoneInfo("America/Lima")
     assert scheduler.seconds_until_next_run(datetime(2026, 10, 14, 3, 30, tzinfo=lima)) == 30 * 60
     assert scheduler.seconds_until_next_run(datetime(2026, 10, 14, 4, 0, tzinfo=lima)) == 24 * 3600
+
+
+async def test_oefa_is_versioned_by_its_portal_title() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path.endswith("obtenerTituloActualizacionRuias.do")
+        return httpx.Response(200, json=[{"fechaActualizacion": "Actualizado a Noviembre del 2025"}])
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        published = await downloader_on(client).find_published_version(RegistrySource.ENVIRONMENTAL_OFFENDERS)
+    assert published.version == "pifa Actualizado a Noviembre del 2025"
+    assert "mostrarDetalleRasmaResumen" in published.url
+
+
+async def test_oefa_falls_back_to_the_open_data_csv_when_the_portal_fails() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "oefa" in request.url.host:
+            return httpx.Response(500)
+        return httpx.Response(200, headers={"Last-Modified": VERSION})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        published = await downloader_on(client).find_published_version(RegistrySource.ENVIRONMENTAL_OFFENDERS)
+    assert published.version == f"csv {VERSION}"
+    assert published.url.endswith(".csv")
+
+
+@pytest.mark.parametrize(
+    "source",
+    [RegistrySource.SHELL_COMPANIES, RegistrySource.COACTIVE_DEBTORS, RegistrySource.OECE_DISQUALIFICATIONS,
+     RegistrySource.OECE_FINES],
+)
+async def test_fixed_sanction_files_are_versioned_by_last_modified(source: RegistrySource) -> None:
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, headers={"Last-Modified": VERSION}))
+    ) as client:
+        published = await downloader_on(client).find_published_version(source)
+    assert published.version == VERSION
