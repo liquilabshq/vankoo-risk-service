@@ -50,10 +50,9 @@ def response_body(findings: list[dict[str, Any]], sources: list[str]) -> dict[st
     }
 
 
-def finding(url: str, category: str = "INSOLVENCY", severity: str = "SERIOUS") -> dict[str, Any]:
+def finding(url: str, category: str = "INSOLVENCY") -> dict[str, Any]:
     return {
         "category": category,
-        "severity": severity,
         "headline": "Avianca Perú entra en liquidación",
         "url": url,
         "published_on": "2024-03-01",
@@ -129,3 +128,19 @@ async def test_an_answer_that_is_not_the_schema_is_unavailable() -> None:
 )
 def test_the_same_page_compares_equal(a: str, b: str) -> None:
     assert normalize_url(a) == normalize_url(b)
+
+
+async def test_registry_pages_are_dropped_and_severity_follows_the_category() -> None:
+    registry = "https://www.sunat.gob.pe/padronesnotificaciones/listaContrib-mayorDeudaExigible-CC.html"
+    trial = "https://elcomercio.pe/politica/juicio-trafico-de-influencias"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = response_body(
+            [finding(registry, "NON_PAYMENT_LITIGATION"), finding(trial, "CORRUPTION")], sources=[registry, trial]
+        )
+        return httpx.Response(200, json=body)
+
+    screening = await screen(httpx.MockTransport(handler))
+    [kept] = screening.findings
+    assert kept.url == trial
+    assert (kept.category, kept.severity) == (NewsCategory.CORRUPTION, NewsSeverity.SERIOUS)

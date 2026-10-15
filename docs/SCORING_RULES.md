@@ -84,7 +84,8 @@ Ejemplos:
 `OpenAINewsScreener` (`assessments/infrastructure/news.py`) hace una sola llamada a la Responses API de OpenAI con `gpt-6-luna`, su herramienta `web_search` (hasta 5 búsquedas, ubicación Perú) y una respuesta con esquema fijo: una lista de hallazgos con categoría, gravedad, titular, URL, fecha y resumen. Costo verificado el 15 oct 2026: $0,10 / $0,50 por millón de tokens y $10 por 1.000 búsquedas, o sea unos **$0,05 por pagador**.
 
 - **Las instrucciones** tratan cada página como dato, nunca como órdenes, y piden solo noticias claramente sobre esa empresa (mismo RUC o misma razón social) de los últimos 5 años.
-- **Después se valida**: un hallazgo cuya URL no está entre las páginas que la búsqueda consultó de verdad se descarta; así un enlace inventado nunca llega a la nota. Una respuesta que no cumple el esquema cuenta como «no respondió».
+- **Después se valida**: un hallazgo cuya URL no está entre las páginas que la búsqueda consultó de verdad se descarta; así un enlace inventado nunca llega a la nota. También se descartan las páginas de registros que ya se leen aparte (SUNAT, OECE, OEFA, datos abiertos), para no contar dos veces lo mismo. Una respuesta que no cumple el esquema cuenta como «no respondió».
+- **La gravedad no la decide la IA**: sale de la categoría (fraude, quiebra y corrupción son graves; lo demás, moderado). En las primeras pruebas reales la IA marcaba como moderado un juicio por tráfico de influencias.
 - **Nunca rechaza y nunca pasa de −30**: una búsqueda automática puede confundir homónimos o leer mal una página.
 - **Caché de 7 días por RUC** (tabla `news_screenings`): el mismo pagador no se vuelve a buscar en ese plazo, haya encontrado algo o no.
 - **Sin clave** (`OPENAI_API_KEY`) o con `NEWS_ENABLED=false`, el paso se salta y queda `NEWS_NOT_SCREENED`.

@@ -50,7 +50,8 @@ class NewsSettings(BaseSettings):
     Attributes:
         enabled (bool): Search for news. Without an API key it is off anyway.
         model (str): The OpenAI model that searches and reads, e.g. ``gpt-6-luna``.
-        reasoning_effort (str): How much the model reasons; ``low`` is enough here.
+        reasoning_effort (str): How much the model reasons. ``medium``: at ``low`` it
+            mixed up categories in the first real runs.
         max_searches (int): The most web searches per payer (each costs about $0.01).
         cache_days (int): How long a payer's search is reused before searching again.
         timeout (float): Seconds to wait for the whole search.
@@ -61,7 +62,7 @@ class NewsSettings(BaseSettings):
 
     enabled: bool = True
     model: str = "gpt-6-luna"
-    reasoning_effort: Literal["none", "low", "medium", "high"] = "low"
+    reasoning_effort: Literal["none", "low", "medium", "high"] = "medium"
     max_searches: int = 5
     cache_days: int = 7
     timeout: float = 90.0
