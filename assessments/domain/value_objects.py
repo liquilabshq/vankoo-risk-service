@@ -6,7 +6,7 @@ before any assessment is built from it.
 """
 import uuid
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from enum import StrEnum
 
@@ -295,6 +295,96 @@ class PayerStanding:
     oece_fines: tuple[SanctionPeriod, ...] = ()
     environmental_infractions: int = 0
     unavailable_sources: tuple[str, ...] = ()
+
+
+class NewsCategory(StrEnum):
+    """What a piece of negative news about a payer is about."""
+
+    FRAUD = "FRAUD"
+    INSOLVENCY = "INSOLVENCY"
+    NON_PAYMENT_LITIGATION = "NON_PAYMENT_LITIGATION"
+    CORRUPTION = "CORRUPTION"
+    ENVIRONMENTAL = "ENVIRONMENTAL"
+    OTHER = "OTHER"
+
+
+class NewsSeverity(StrEnum):
+    """How much a piece of news weighs: fraud, insolvency and corruption are serious."""
+
+    SERIOUS = "SERIOUS"
+    MODERATE = "MODERATE"
+
+
+@dataclass(frozen=True, slots=True)
+class NewsFinding:
+    """One piece of negative news about a payer, with the page it came from.
+
+    Attributes:
+        category (NewsCategory): What it is about.
+        severity (NewsSeverity): How much it weighs.
+        headline (str): The news in one line.
+        url (str): The page it was read on; always one the search actually consulted.
+        published_on (date | None): When it was published, if the page says.
+        summary (str): What it says about the payer, in a sentence or two.
+    """
+
+    category: NewsCategory
+    severity: NewsSeverity
+    headline: str
+    url: str
+    published_on: date | None
+    summary: str
+
+    def __post_init__(self) -> None:
+        """Reject a finding without headline or a page to check it on.
+
+        Raises:
+            DomainError: If the headline is blank or the URL is not http(s).
+        """
+        if not self.headline.strip():
+            raise DomainError("A news finding needs a headline")
+        if not self.url.startswith(("http://", "https://")):
+            raise DomainError(f"'{self.url}' is not a web address")
+
+
+@dataclass(frozen=True, slots=True)
+class NewsScreening:
+    """The result of searching the web for negative news about a payer.
+
+    Attributes:
+        ruc (str): The payer searched.
+        findings (tuple[NewsFinding, ...]): The negative news found; empty if none.
+        screened_at (datetime): When the search ran, in UTC.
+        model (str): The model that read the results, e.g. ``gpt-6-luna``.
+        sources_consulted (int): How many pages the search looked at.
+    """
+
+    ruc: str
+    findings: tuple[NewsFinding, ...]
+    screened_at: datetime
+    model: str
+    sources_consulted: int
+
+
+class NewsCheckStatus(StrEnum):
+    """Whether the payer's news could be checked for this assessment."""
+
+    SCREENED = "SCREENED"
+    UNAVAILABLE = "UNAVAILABLE"
+    NOT_SCREENED = "NOT_SCREENED"
+
+
+@dataclass(frozen=True, slots=True)
+class NewsCheck:
+    """The news check an assessment was graded with.
+
+    Attributes:
+        status (NewsCheckStatus): Checked, failed, or turned off.
+        screening (NewsScreening | None): The search, when it was checked.
+    """
+
+    status: NewsCheckStatus
+    screening: NewsScreening | None = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -7,7 +7,7 @@ means for the assessment is the aggregate's.
 """
 import logging
 from collections.abc import Callable
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 from assessments.application.acl import ExternalRegistriesService
@@ -16,12 +16,24 @@ from assessments.application.outbound_services import (
     CreditBureau,
     EvaluationOutcomeKind,
     InvestmentUnavailableError,
+    NewsScreener,
+    NewsUnavailableError,
 )
 from assessments.domain.entities import RiskAssessment
 from assessments.domain.exceptions import RiskAssessmentNotFoundError
-from assessments.domain.repositories import RiskAssessmentRepository
+from assessments.domain.repositories import NewsScreeningRepository, RiskAssessmentRepository
 from assessments.domain.services import RiskGradingPolicy
-from assessments.domain.value_objects import AssessmentId, AuctionFacts, AuctionId, Currency, Money, Payer, Ruc
+from assessments.domain.value_objects import (
+    AssessmentId,
+    AuctionFacts,
+    AuctionId,
+    Currency,
+    Money,
+    NewsCheck,
+    NewsCheckStatus,
+    Payer,
+    Ruc,
+)
 from shared.application.events import EventBus
 from shared.application.messaging import Inbox
 from shared.application.unit_of_work import UnitOfWork
@@ -32,6 +44,8 @@ logger = logging.getLogger(__name__)
 AUCTION_CREATED = "AuctionCreated"
 
 type Clock = Callable[[], datetime]
+
+NEWS_CACHE_DAYS = 7
 
 
 def utc_now() -> datetime:
@@ -48,11 +62,14 @@ class RiskAssessmentApplicationService:
         inbox: Inbox,
         registries: ExternalRegistriesService,
         credit_bureau: CreditBureau,
+        news_screener: NewsScreener,
+        news_screenings: NewsScreeningRepository,
         evaluation_service: AuctionEvaluationService,
         grading_policy: RiskGradingPolicy,
         unit_of_work: UnitOfWork,
         event_bus: EventBus,
         clock: Clock = utc_now,
+        news_cache_days: int = NEWS_CACHE_DAYS,
     ) -> None:
         """Initialize the service with its collaborators.
 
@@ -61,16 +78,22 @@ class RiskAssessmentApplicationService:
             inbox (Inbox): The integration events already applied.
             registries (ExternalRegistriesService): What the public registries say about the payer.
             credit_bureau (CreditBureau): The payer's credit rating (simulated today).
+            news_screener (NewsScreener): Searches the web for negative news about the payer.
+            news_screenings (NewsScreeningRepository): Recent searches, reused instead of searching again.
             evaluation_service (AuctionEvaluationService): Delivers decisions to Investment.
             grading_policy (RiskGradingPolicy): Decides eligibility and the grade.
             unit_of_work (UnitOfWork): The transaction to commit.
             event_bus (EventBus): Where the recorded domain events are published.
             clock (Clock): The current time, replaceable in tests.
+            news_cache_days (int): How long a payer's news search is reused.
         """
         self._risk_assessments = risk_assessment_repository
         self._inbox = inbox
         self._registries = registries
         self._credit_bureau = credit_bureau
+        self._news_screener = news_screener
+        self._news_screenings = news_screenings
+        self._news_cache = timedelta(days=news_cache_days)
         self._evaluations = evaluation_service
         self._grading_policy = grading_policy
         self._unit_of_work = unit_of_work
@@ -128,7 +151,8 @@ class RiskAssessmentApplicationService:
         standing = await self._registries.payer_standing(facts.payer.ruc)
         credit = await self._credit_bureau.report(facts.payer.ruc)
         now = self._clock()
-        decision = self._grading_policy.grade(facts, standing, credit, now.date())
+        news = await self._check_news(facts.payer.ruc, standing.name or facts.payer.name, now)
+        decision = self._grading_policy.grade(facts, standing, credit, news, now.date())
         assessment = RiskAssessment.issue(AssessmentId.new(), facts, decision, event_id, now)
         events = assessment.pull_events()
         saved = await self._risk_assessments.save(assessment)
@@ -153,6 +177,26 @@ class RiskAssessmentApplicationService:
                 decision.rejection_reason,
             )
         return saved
+
+    async def _check_news(self, ruc: Ruc, name: str, now: datetime) -> NewsCheck:
+        cached = await self._news_screenings.find_since(ruc.value, now - self._news_cache)
+        if cached is not None:
+            return NewsCheck(NewsCheckStatus.SCREENED, cached)
+        try:
+            screening = await self._news_screener.screen(ruc, name)
+        except NewsUnavailableError as error:
+            logger.warning("News search for %s failed; assessing without it: %s", ruc.value, error)
+            return NewsCheck(NewsCheckStatus.UNAVAILABLE)
+        if screening is None:
+            return NewsCheck(NewsCheckStatus.NOT_SCREENED)
+        await self._news_screenings.save(screening)
+        logger.info(
+            "News search for %s: %d finding(s) from %d source(s)",
+            ruc.value,
+            len(screening.findings),
+            screening.sources_consulted,
+        )
+        return NewsCheck(NewsCheckStatus.SCREENED, screening)
 
     async def deliver_assessment(self, auction_id: str) -> RiskAssessment:
         """Send an auction's pending decision to Investment and record the answer.
