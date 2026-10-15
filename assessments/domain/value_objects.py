@@ -211,9 +211,55 @@ class AuctionFacts:
             raise DomainError("MYPE id must not be blank")
 
 
+class SbsRating(StrEnum):
+    """A debtor's rating in Peru's financial system, as credit bureaus report it (SBS scale)."""
+
+    NORMAL = "NORMAL"
+    POTENTIAL_PROBLEMS = "CPP"
+    DEFICIENT = "DEFICIENTE"
+    DOUBTFUL = "DUDOSO"
+    LOSS = "PERDIDA"
+
+
+@dataclass(frozen=True, slots=True)
+class CreditReport:
+    """What a credit bureau says about a payer.
+
+    Attributes:
+        rating (SbsRating): Its rating in the financial system.
+        source (str): Which bureau, e.g. ``simulated-bureau-v1``.
+        simulated (bool): Whether the report is made up rather than bought from
+            a real bureau; every factor built from it says so.
+    """
+
+    rating: SbsRating
+    source: str
+    simulated: bool
+
+
+@dataclass(frozen=True, slots=True)
+class SanctionPeriod:
+    """When an OECE sanction applies, and its amount if it is a fine.
+
+    Attributes:
+        starts_on (date | None): When it starts; ``None`` if not published.
+        ends_on (date | None): When it ends; ``None`` if open-ended.
+        amount (Decimal | None): The fine in soles; ``None`` for a disqualification.
+    """
+
+    starts_on: date | None
+    ends_on: date | None
+    amount: Decimal | None = None
+
+    def in_force_on(self, day: date) -> bool:
+        """Tell whether the sanction applies on a given day."""
+        started = self.starts_on is None or self.starts_on <= day
+        return started and (self.ends_on is None or self.ends_on >= day)
+
+
 @dataclass(frozen=True, slots=True)
 class PayerStanding:
-    """What SUNAT's registries say about the payer of an invoice.
+    """What the public registries say about the payer of an invoice.
 
     Attributes:
         registry_loaded (bool): Whether the padrón was ever loaded. If not, the
@@ -225,6 +271,14 @@ class PayerStanding:
         ubigeo (str | None): Its district code.
         withholding_agent (bool): SUNAT designated it IGV withholding agent.
         perception_agent (bool): SUNAT designated it IGV perception agent.
+        shell_company (bool): SUNAT lists it without operating capacity (SSCO).
+        coactive_debt (Decimal | None): Its debt in SUNAT's coactive collection,
+            if it is on SUNAT's list of the largest ones.
+        oece_disqualifications (tuple[SanctionPeriod, ...]): Its OECE
+            disqualifications, in force or not.
+        oece_fines (tuple[SanctionPeriod, ...]): Its unpaid OECE fines.
+        environmental_infractions (int): Its sanctioned offences in OEFA's register.
+        unavailable_sources (tuple[str, ...]): Sanction lists never loaded.
     """
 
     registry_loaded: bool
@@ -235,6 +289,12 @@ class PayerStanding:
     ubigeo: str | None = None
     withholding_agent: bool = False
     perception_agent: bool = False
+    shell_company: bool = False
+    coactive_debt: Decimal | None = None
+    oece_disqualifications: tuple[SanctionPeriod, ...] = ()
+    oece_fines: tuple[SanctionPeriod, ...] = ()
+    environmental_infractions: int = 0
+    unavailable_sources: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

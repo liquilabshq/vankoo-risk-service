@@ -13,6 +13,7 @@ from decimal import Decimal
 from assessments.application.acl import ExternalRegistriesService
 from assessments.application.outbound_services import (
     AuctionEvaluationService,
+    CreditBureau,
     EvaluationOutcomeKind,
     InvestmentUnavailableError,
 )
@@ -46,6 +47,7 @@ class RiskAssessmentApplicationService:
         risk_assessment_repository: RiskAssessmentRepository,
         inbox: Inbox,
         registries: ExternalRegistriesService,
+        credit_bureau: CreditBureau,
         evaluation_service: AuctionEvaluationService,
         grading_policy: RiskGradingPolicy,
         unit_of_work: UnitOfWork,
@@ -57,7 +59,8 @@ class RiskAssessmentApplicationService:
         Args:
             risk_assessment_repository (RiskAssessmentRepository): Access to assessments.
             inbox (Inbox): The integration events already applied.
-            registries (ExternalRegistriesService): What SUNAT says about the payer.
+            registries (ExternalRegistriesService): What the public registries say about the payer.
+            credit_bureau (CreditBureau): The payer's credit rating (simulated today).
             evaluation_service (AuctionEvaluationService): Delivers decisions to Investment.
             grading_policy (RiskGradingPolicy): Decides eligibility and the grade.
             unit_of_work (UnitOfWork): The transaction to commit.
@@ -67,6 +70,7 @@ class RiskAssessmentApplicationService:
         self._risk_assessments = risk_assessment_repository
         self._inbox = inbox
         self._registries = registries
+        self._credit_bureau = credit_bureau
         self._evaluations = evaluation_service
         self._grading_policy = grading_policy
         self._unit_of_work = unit_of_work
@@ -122,8 +126,9 @@ class RiskAssessmentApplicationService:
             return existing
 
         standing = await self._registries.payer_standing(facts.payer.ruc)
+        credit = await self._credit_bureau.report(facts.payer.ruc)
         now = self._clock()
-        decision = self._grading_policy.grade(facts, standing, now.date())
+        decision = self._grading_policy.grade(facts, standing, credit, now.date())
         assessment = RiskAssessment.issue(AssessmentId.new(), facts, decision, event_id, now)
         events = assessment.pull_events()
         saved = await self._risk_assessments.save(assessment)

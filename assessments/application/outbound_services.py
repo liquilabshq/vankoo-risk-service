@@ -1,5 +1,8 @@
 """Outbound ports of the Assessments application layer.
 
+A credit bureau reports a payer's rating in the financial system through
+:class:`CreditBureau`; today the only adapter is a simulation.
+
 The application service delivers each assessment to Investment through
 :class:`AuctionEvaluationService`. It does not know that the other side is an
 HTTP endpoint; it only knows the three things that can happen: Investment
@@ -9,6 +12,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
+
+from assessments.domain.value_objects import CreditReport, Ruc
 
 
 class EvaluationOutcomeKind(StrEnum):
@@ -31,6 +36,14 @@ class EvaluationOutcome:
     kind: EvaluationOutcomeKind
     auction_status: str | None = None
     message: str | None = None
+
+
+class CreditBureau(ABC):
+    """A credit bureau (Equifax, Sentinel…) that reports a payer's rating in the financial system."""
+
+    @abstractmethod
+    async def report(self, ruc: Ruc) -> CreditReport | None:
+        """Return the bureau's report on a payer, or ``None`` if there is none to give."""
 
 
 class InvestmentUnavailableError(Exception):

@@ -1,4 +1,4 @@
-"""Settings the Assessments context owns, read from ``INVESTMENT_*`` variables."""
+"""Settings the Assessments context owns, read from ``INVESTMENT_*`` and ``CREDIT_BUREAU_*`` variables."""
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -23,3 +23,19 @@ class InvestmentSettings(BaseSettings):
 
 
 investment_settings = InvestmentSettings()
+
+
+class CreditBureauSettings(BaseSettings):
+    """Whether the scoring asks a credit bureau, read from ``CREDIT_BUREAU_*`` variables.
+
+    Attributes:
+        enabled (bool): Ask the (simulated) bureau. With ``false`` the credit
+            rating is left out of the score.
+    """
+
+    model_config = SettingsConfigDict(env_file=".env", env_prefix="CREDIT_BUREAU_", extra="ignore")
+
+    enabled: bool = True
+
+
+credit_bureau_settings = CreditBureauSettings()
