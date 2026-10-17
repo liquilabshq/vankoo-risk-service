@@ -10,7 +10,7 @@ from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
-from assessments.application.acl import ExternalRegistriesService
+from assessments.application.acl import ExternalRegistriesService, ExternalSustainabilityService
 from assessments.application.outbound_services import (
     AuctionEvaluationService,
     CreditBureau,
@@ -28,6 +28,7 @@ from assessments.domain.value_objects import (
     AuctionFacts,
     AuctionId,
     Currency,
+    GreenCheck,
     Money,
     NewsCheck,
     NewsCheckStatus,
@@ -37,6 +38,7 @@ from assessments.domain.value_objects import (
 from shared.application.events import EventBus
 from shared.application.messaging import Inbox
 from shared.application.unit_of_work import UnitOfWork
+from shared.domain.calendar import lima_date
 from shared.domain.exceptions import DomainError
 
 logger = logging.getLogger(__name__)
@@ -61,6 +63,7 @@ class RiskAssessmentApplicationService:
         risk_assessment_repository: RiskAssessmentRepository,
         inbox: Inbox,
         registries: ExternalRegistriesService,
+        sustainability: ExternalSustainabilityService,
         credit_bureau: CreditBureau,
         news_screener: NewsScreener,
         news_screenings: NewsScreeningRepository,
@@ -77,6 +80,7 @@ class RiskAssessmentApplicationService:
             risk_assessment_repository (RiskAssessmentRepository): Access to assessments.
             inbox (Inbox): The integration events already applied.
             registries (ExternalRegistriesService): What the public registries say about the payer.
+            sustainability (ExternalSustainabilityService): Whether the MYPE is green.
             credit_bureau (CreditBureau): The payer's credit rating (simulated today).
             news_screener (NewsScreener): Searches the web for negative news about the payer.
             news_screenings (NewsScreeningRepository): Recent searches, reused instead of searching again.
@@ -90,6 +94,7 @@ class RiskAssessmentApplicationService:
         self._risk_assessments = risk_assessment_repository
         self._inbox = inbox
         self._registries = registries
+        self._sustainability = sustainability
         self._credit_bureau = credit_bureau
         self._news_screener = news_screener
         self._news_screenings = news_screenings
@@ -153,7 +158,12 @@ class RiskAssessmentApplicationService:
         now = self._clock()
         news = await self._check_news(facts.payer.ruc, standing.name or facts.payer.name, now)
         decision = self._grading_policy.grade(facts, standing, credit, news, now.date())
-        assessment = RiskAssessment.issue(AssessmentId.new(), facts, decision, event_id, now)
+        green = (
+            await self._sustainability.green_check(facts.mype_id, lima_date(now))
+            if decision.eligible
+            else GreenCheck.not_checked()
+        )
+        assessment = RiskAssessment.issue(AssessmentId.new(), facts, decision, event_id, now, green)
         events = assessment.pull_events()
         saved = await self._risk_assessments.save(assessment)
         await self._inbox.record(event_id, AUCTION_CREATED, facts.auction_id.value)
@@ -162,10 +172,11 @@ class RiskAssessmentApplicationService:
 
         if decision.eligible:
             logger.info(
-                "Auction %s graded %s (score %s, assessment %s)",
+                "Auction %s graded %s (score %s, green %s, assessment %s)",
                 auction_id,
                 decision.grade,
                 decision.score,
+                green.status,
                 saved.assessment_id.value,
             )
         else:
@@ -201,8 +212,9 @@ class RiskAssessmentApplicationService:
     async def deliver_assessment(self, auction_id: str) -> RiskAssessment:
         """Send an auction's pending decision to Investment and record the answer.
 
-        An eligible decision becomes the auction's grade; one that is not
-        eligible rejects the auction.
+        An eligible decision becomes the auction's grade, with the certificate
+        that makes it green when there is one; one that is not eligible
+        rejects the auction.
 
         Returns:
             RiskAssessment: The assessment after the attempt.
@@ -221,6 +233,7 @@ class RiskAssessmentApplicationService:
                     risk_grade=decision.grade.value,
                     full_balance_outstanding=decision.full_balance_outstanding,
                     assessed_at=assessment.assessed_at,
+                    green_certificate=assessment.green.certificate,
                 )
             else:
                 outcome = await self._evaluations.reject(

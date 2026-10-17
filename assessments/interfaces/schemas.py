@@ -5,7 +5,7 @@ from decimal import Decimal
 from pydantic import BaseModel
 
 from assessments.domain.entities import RiskAssessment
-from assessments.domain.value_objects import Currency, DeliveryStatus, RiskGrade
+from assessments.domain.value_objects import Currency, DeliveryStatus, GreenCertificate, GreenStatus, RiskGrade
 
 
 class ScoreFactorResponse(BaseModel):
@@ -16,6 +16,36 @@ class ScoreFactorResponse(BaseModel):
     detail: str
 
 
+class GreenCriterionResponse(BaseModel):
+    """One check the MYPE's certificate passed."""
+
+    code: str
+    detail: str
+
+
+class GreenCertificateResponse(BaseModel):
+    """The certificate that makes the auction green."""
+
+    certification_id: str
+    standard: str
+    issuer: str
+    valid_until: date
+    criteria: list[GreenCriterionResponse]
+
+    @classmethod
+    def from_value(cls, certificate: GreenCertificate | None) -> "GreenCertificateResponse | None":
+        """Build the response from the value object, or ``None`` when the auction is not green."""
+        if certificate is None:
+            return None
+        return cls(
+            certification_id=certificate.certification_id,
+            standard=certificate.standard,
+            issuer=certificate.issuer,
+            valid_until=certificate.valid_until,
+            criteria=[GreenCriterionResponse(code=item.code, detail=item.detail) for item in certificate.criteria],
+        )
+
+
 class RiskAssessmentResponse(BaseModel):
     """A risk assessment as the API returns it.
 
@@ -24,6 +54,9 @@ class RiskAssessmentResponse(BaseModel):
     ``rejection_code`` and ``rejection_reason`` say why. ``factors`` lists
     every reason behind the decision. ``provisional`` is true only for the
     assessments of phase 1, graded by a stand-in that did not look at the payer.
+    ``green_status`` says whether the MYPE was green that day, and
+    ``green_certificate`` carries the certificate when it was; ``green_certified``
+    is only what Investment published when it created the auction.
     """
 
     assessment_id: str
@@ -36,6 +69,8 @@ class RiskAssessmentResponse(BaseModel):
     invoice_amount: Decimal
     currency: Currency
     green_certified: bool
+    green_status: GreenStatus
+    green_certificate: GreenCertificateResponse | None
     eligible: bool
     risk_grade: RiskGrade | None
     score: int | None
@@ -75,6 +110,8 @@ class RiskAssessmentResponse(BaseModel):
             invoice_amount=facts.invoice_amount.amount,
             currency=facts.invoice_amount.currency,
             green_certified=facts.green_certified,
+            green_status=assessment.green.status,
+            green_certificate=GreenCertificateResponse.from_value(assessment.green.certificate),
             eligible=assessment.eligible,
             risk_grade=assessment.grade,
             score=assessment.decision.score,

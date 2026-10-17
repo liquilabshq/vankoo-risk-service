@@ -1,11 +1,12 @@
 """The Investment adapter: what it sends, and how it reads each answer."""
 import json
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 import httpx
 import pytest
 
 from assessments.application.outbound_services import EvaluationOutcomeKind, InvestmentUnavailableError
+from assessments.domain.value_objects import GreenCertificate, GreenCriterion
 from assessments.infrastructure.clients import HttpxAuctionEvaluationService, format_instant
 
 ASSESSED_AT = datetime(2026, 10, 14, 18, 0, 0, 123456, tzinfo=UTC)
@@ -104,3 +105,36 @@ async def test_sends_a_rejection_to_its_own_endpoint() -> None:
     }
     assert outcome.kind is EvaluationOutcomeKind.ACCEPTED
     assert outcome.auction_status == "REJECTED"
+
+
+async def test_a_green_auction_sends_its_certificate() -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json={"status": "DRAFT"})
+
+    certificate = GreenCertificate(
+        certification_id="green-1",
+        standard="ISO_14001",
+        issuer="SGS del Perú S.A.C.",
+        valid_until=date(2028, 3, 31),
+        criteria=(GreenCriterion("IN_FORCE", "Vigente hasta el 2028-03-31"),),
+    )
+    async with httpx.AsyncClient(base_url="http://investment", transport=httpx.MockTransport(handler)) as client:
+        await HttpxAuctionEvaluationService(client).submit(
+            auction_id="auction-1",
+            assessment_id="risk-1",
+            risk_grade="A",
+            full_balance_outstanding=True,
+            assessed_at=ASSESSED_AT,
+            green_certificate=certificate,
+        )
+
+    assert json.loads(seen[0].content)["greenCertification"] == {
+        "certificationId": "green-1",
+        "standard": "ISO_14001",
+        "issuer": "SGS del Perú S.A.C.",
+        "validUntil": "2028-03-31",
+        "criteria": [{"code": "IN_FORCE", "detail": "Vigente hasta el 2028-03-31"}],
+    }

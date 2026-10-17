@@ -2,12 +2,13 @@
 
 ## Contextos
 
-Dos contextos acotados, cada uno con las cuatro capas de la skill `ddd-fastapi`:
+Tres contextos acotados, cada uno con las cuatro capas de la skill `ddd-fastapi`:
 
 - `assessments` decide sobre cada subasta.
 - `registries` guarda la copia local de los padrones de SUNAT y de las listas de sanciones (SUNAT, OECE, OEFA).
+- `sustainability` decide si una MYPE es verde a partir del certificado que subió a su perfil.
 
-`assessments` le pregunta a `registries` solo por su fachada (`registries/interfaces/acl.py`), a través de `assessments/application/acl.py`, que es el único módulo que la importa.
+Un contexto le pregunta a otro solo por su fachada (`interfaces/acl.py`), a través de su propio `application/acl.py`, que es el único módulo que la importa. `assessments` pregunta a `registries` por el pagador y a `sustainability` por la MYPE; `sustainability` pregunta a `registries` por la razón social y por OEFA.
 
 ### `assessments`
 
@@ -29,12 +30,24 @@ Dos contextos acotados, cada uno con las cuatro capas de la skill `ddd-fastapi`:
 
 La carga del padrón (1,6 GB, unos 18 M de filas) corre siempre en **otro proceso**, nunca en el bucle de eventos de la API. Escribe en una tabla nueva y la intercambia por la vieja en la misma transacción: hasta el commit se sigue leyendo la copia anterior, y si algo falla queda intacta.
 
+### `sustainability`
+
+| Capa | Qué hay |
+|---|---|
+| `domain/` | El agregado `GreenCertification` (la decisión sobre una subida, con cada regla y su resultado), sus value objects (`CertificateDocument`, `CertificateExtraction`, `CriterionResult`, `Mype`…), el evento `GreenCertificationDecided` y la política `GreenCertificationPolicy` (`green-v1`) |
+| `application/` | `GreenCertificationApplicationService` (decidir sobre un certificado), `GreenCertificationQueryService` (si una MYPE es verde un día dado), los puertos `CertificateDocuments`, `CertificateReader` y `GreenCertificationPublisher`, y la ACL hacia `registries` |
+| `infrastructure/` | Tabla `green_certifications`, la descarga con httpx desde el bucket de Profile, `OpenAICertificateReader` (`gpt-6-luna` con el archivo en base64) y el publicador que escribe en el outbox |
+| `interfaces/` | El consumidor de `vankoo.profile.events`, el parser de `SustainabilityCertificateSubmitted` y la fachada `green_status` para `assessments` |
+
+La IA solo transcribe el certificado y las reglas deciden. Comprueba coherencia con SUNAT y OEFA, no autenticidad: ver [GREEN_RULES.md](GREEN_RULES.md).
+
 ### `shared`
 
 `shared/` es el núcleo compartido de la skill, más tres piezas técnicas que la skill no trae:
 
 - la **bandeja de eventos procesados** (`processed_events`);
 - la tabla de **dead letters**;
+- el **outbox** de Kafka (`outbox_messages`) y su relay (`shared/interfaces/outbox_relay.py`), por donde salen los eventos de este servicio;
 - un **supervisor de tareas en segundo plano**, más `/health`.
 
 ## Flujo
@@ -95,10 +108,38 @@ kafka-consumer-groups.sh --bootstrap-server localhost:9092 --group risk-auction-
   --topic investment.auction-lifecycle.v1 --reset-offsets --to-datetime 2026-10-14T00:00:00.000 --execute
 ```
 
+## El certificado verde
+
+```mermaid
+sequenceDiagram
+    participant P as Profile
+    participant K as Kafka
+    participant C as Consumidor (sustainability)
+    participant S as Bucket de Profile
+    participant AI as OpenAI
+    participant DB as PostgreSQL
+    participant R as Relay del outbox
+
+    P->>K: SustainabilityCertificateSubmitted (vankoo.profile.events)
+    K->>C: mensaje
+    C->>S: GET objectKey (GREEN_DOCUMENTS_BASE_URL)
+    C->>AI: el archivo en base64; responde los datos impresos
+    C->>DB: reglas green-v1 → decisión + outbox + eventId procesado (una transacción)
+    C-->>R: GreenCertificationDecided (lo despierta)
+    R->>K: GreenCertificationIssued (risk.green-certifications.v1)
+    K->>P: Profile guarda el estado y los criterios
+```
+
+- **Si el bucket u OpenAI no responden**, no se guarda nada y el mensaje se reintenta (1 s… hasta 60 s), igual que con la base de datos caída. Una clave rechazada también se reintenta: es mejor bloquear el tópico hasta arreglarla que dar por ilegibles todos los certificados.
+- **Si el archivo no sirve** (no existe, es demasiado grande o no es lo que dice ser) o la respuesta de la IA no valida, se decide `NOT_GREEN` con ese motivo.
+- **El outbox**: la decisión y su mensaje se guardan juntos. El relay los manda en orden, marca cada uno al recibir el acuse del broker y reintenta con espera creciente (1 s… hasta 5 min). La entrega es al menos una vez: Profile deduplica por `eventId` e ignora la decisión sobre una subida que ya no es la vigente.
+- **El consumidor de Profile empieza por `earliest`**, al revés que el de subastas. El tópico de Profile lo crea Kafka con su primer evento, a veces después de que arranque risk, y un grupo con `latest` que descubre el tópico tarde se salta lo que ya estaba. Releer eventos viejos de Profile no hace daño: los que no son `SustainabilityCertificateSubmitted` se saltan y el inbox ignora los repetidos. Además, pide metadatos nuevos cada 30 s (no cada 5 min) para enterarse antes de que el tópico existe.
+- **En cada subasta** elegible, `assessments` pregunta a la fachada de `sustainability` y el certificado viaja en el mismo `PUT …/evaluation` (`greenCertification`). Una subasta rechazada no se consulta.
+
 ## Un solo proceso
 
-El consumidor y el repartidor corren como tareas supervisadas dentro del `lifespan` de FastAPI: si fallan, se registran y se reinician. Con más de un worker de uvicorn habría consumidores y repartidores duplicados. Se escala con más contenedores en el mismo grupo de Kafka.
+Los dos consumidores, el repartidor y el relay del outbox corren como tareas supervisadas dentro del `lifespan` de FastAPI: si fallan, se registran y se reinician. Con más de un worker de uvicorn habría consumidores, repartidores y relays duplicados. Se escala con más contenedores en los mismos grupos de Kafka.
 
 ## Lo que cambia en las fases siguientes
 
-Nuevas fuentes (certificados verdes) entran como nuevos campos de `PayerStanding` o nuevos puertos, y nuevas reglas en la política. Ver [SCORING_RULES.md](SCORING_RULES.md).
+Nuevas fuentes del pagador entran como nuevos campos de `PayerStanding` o nuevos puertos, y nuevas reglas en la política ([SCORING_RULES.md](SCORING_RULES.md)). Otros sellos verdes entran como nuevas normas en `GreenStandard` y en [GREEN_RULES.md](GREEN_RULES.md).

@@ -1,9 +1,9 @@
 """Entry point of the Vankoo Risk Service API.
 
 Assembles the application: registers every bounded context's router, the
-exception handlers and the event handlers, starts the Kafka consumer, the
-delivery worker and the daily refresh of SUNAT's registries, and closes
-everything on shutdown. The schema is Alembic's
+exception handlers and the event handlers, starts the Kafka consumers (Investment's
+auctions and Profile's certificates), the delivery worker, the outbox relay and
+the daily refresh of SUNAT's registries, and closes everything on shutdown. The schema is Alembic's
 job (``alembic upgrade head``), never this module's.
 
 Run it with one worker only: the consumer and the delivery worker live in
@@ -38,6 +38,16 @@ from shared.interfaces.background import BackgroundTask
 from shared.interfaces.exception_handlers import register_exception_handlers
 from shared.interfaces.health import ReadinessCheck
 from shared.interfaces.health import router as health_router
+from shared.interfaces.outbox_relay import KafkaOutboxRelay
+from sustainability.application.event_handlers import register_event_handlers as register_sustainability_event_handlers
+from sustainability.application.services import GreenCertificationApplicationService
+from sustainability.infrastructure.settings import green_settings
+from sustainability.interfaces.consumers import ProfileEventsConsumer
+from sustainability.interfaces.dependencies import (
+    build_certificate_reader,
+    build_documents_client,
+    build_green_certification_service,
+)
 
 # Uvicorn configures its own loggers only; without this, the application's
 # INFO messages (an event handler's, for one) are silently dropped.
@@ -63,9 +73,28 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     def build_service(session: AsyncSession) -> RiskAssessmentApplicationService:
         return build_risk_assessment_service(session, investment_client, news_screener)
 
+    certificate_reader, reader_client = build_certificate_reader()
+    documents_client = build_documents_client()
+    logging.getLogger(__name__).info(
+        "Certificate reading is %s",
+        "on" if reader_client is not None else "off (GREEN_ENABLED or OPENAI_API_KEY unset)",
+    )
+
+    def build_green_service(session: AsyncSession) -> GreenCertificationApplicationService:
+        return build_green_certification_service(session, documents_client, certificate_reader)
+
     worker = EvaluationDeliveryWorker(session_factory, build_service)
     consumer = AuctionLifecycleConsumer(kafka_settings, session_factory, build_service)
+    profile_consumer = ProfileEventsConsumer(
+        kafka_settings,
+        green_settings.profile_group_id,
+        session_factory,
+        build_green_service,
+        green_settings.profile_offset_reset,
+    )
+    relay = KafkaOutboxRelay(kafka_settings, session_factory)
     register_assessments_event_handlers(event_bus, worker.wake)
+    register_sustainability_event_handlers(event_bus, relay.wake)
 
     tasks: list[BackgroundTask] = []
     checks: dict[str, ReadinessCheck] = {}
@@ -73,6 +102,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         consumer_task = BackgroundTask("auction-lifecycle-consumer", consumer.run)
         tasks.append(consumer_task)
         checks["auction_lifecycle_consumer"] = lambda: consumer.ready
+        tasks.append(BackgroundTask("profile-events-consumer", profile_consumer.run))
+        checks["profile_events_consumer"] = lambda: profile_consumer.ready
+    if kafka_settings.producer_enabled:
+        relay_task = BackgroundTask("outbox-relay", relay.run)
+        tasks.append(relay_task)
+        checks["outbox_relay"] = lambda: relay_task.running
     if investment_settings.delivery_enabled:
         delivery_task = BackgroundTask("evaluation-delivery", worker.run)
         tasks.append(delivery_task)
@@ -90,6 +125,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         for task in reversed(tasks):
             await task.stop()
         await investment_client.aclose()
+        await documents_client.aclose()
+        if reader_client is not None:
+            await reader_client.close()
         if news_client is not None:
             await news_client.close()
         await engine.dispose()

@@ -4,6 +4,8 @@ Microservicio de evaluación de riesgo de Vankoo. Decide si la factura de cada s
 
 Califica al **pagador** con datos públicos (padrón de SUNAT, agentes de retención, sujetos sin capacidad operativa, deuda coactiva, sanciones de OECE y OEFA), noticias en internet leídas por IA (OpenAI), una central de riesgos **simulada** y reglas de puntos explicables: ver [docs/SCORING_RULES.md](docs/SCORING_RULES.md).
 
+Decide también si la **MYPE** es verde: lee con IA el certificado ambiental (ISO 14001 o ISO 50001) que subió a su perfil, lo comprueba con reglas fijas contra SUNAT y OEFA y marca como verdes sus subastas: ver [docs/GREEN_RULES.md](docs/GREEN_RULES.md).
+
 ## Qué hace
 
 1. Escucha `AuctionCreated` en el tópico `investment.auction-lifecycle.v1`.
@@ -12,6 +14,13 @@ Califica al **pagador** con datos públicos (padrón de SUNAT, agentes de retenc
 4. Se la entrega a Investment, y reintenta mientras Investment no responda:
    - si es elegible, con `PUT /api/v1/internal/auctions/{auctionId}/evaluation`: la subasta pasa a `DRAFT` y la MYPE ya puede cotizarla;
    - si no, con `POST /api/v1/internal/auctions/{auctionId}/rejection`: la subasta pasa a `REJECTED` con el motivo.
+
+Y, para el verde (contexto `sustainability`):
+
+1. Escucha `SustainabilityCertificateSubmitted` en `vankoo.profile.events`.
+2. Descarga el certificado del bucket de Profile, lo lee con OpenAI y lo decide con las reglas `green-v1`.
+3. Publica `GreenCertificationIssued` en `risk.green-certifications.v1` desde un outbox, para que Profile lo muestre.
+4. Al calificar una subasta elegible, adjunta el certificado de su MYPE si sigue siendo verde ese día.
 
 ## Los padrones de SUNAT
 
@@ -76,9 +85,9 @@ docker compose up -d --build risk-service
 
 | Método | Ruta | Qué hace |
 |---|---|---|
-| GET | `/api/v1/risk-assessments/{auctionId}` | La evaluación de una subasta (elegible o no, nota, puntaje, factores) y el estado de su entrega a Investment |
+| GET | `/api/v1/risk-assessments/{auctionId}` | La evaluación de una subasta (elegible o no, nota, puntaje, factores, si es verde y con qué certificado) y el estado de su entrega a Investment |
 | GET | `/health` | Vivo |
-| GET | `/health/ready` | Listo: base de datos, consumidor y repartidor arriba (503 si no) |
+| GET | `/health/ready` | Listo: base de datos, consumidores, repartidor y relay arriba (503 si no) |
 
 No se rutea por el gateway todavía.
 
@@ -90,7 +99,8 @@ No se rutea por el gateway todavía.
 | `KAFKA_BOOTSTRAP_SERVERS` | `localhost:9092` | `kafka-broker:9094` dentro de Docker |
 | `KAFKA_GROUP_ID` | `risk-auction-assessment-v1` | Grupo de consumidores |
 | `KAFKA_AUTO_OFFSET_RESET` | `latest` | Dónde empieza un grupo nuevo; ver por qué en la arquitectura |
-| `KAFKA_CONSUMER_ENABLED` | `true` | Apagarlo en tests o para solo migrar |
+| `KAFKA_CONSUMER_ENABLED` | `true` | Apagar los dos consumidores en tests o para solo migrar |
+| `KAFKA_PRODUCER_ENABLED` | `true` | Apagar el relay del outbox (`risk.green-certifications.v1`) |
 | `INVESTMENT_BASE_URL` | `http://localhost:8082` | Investment directo, nunca el gateway |
 | `INVESTMENT_DELIVERY_ENABLED` | `true` | Apagar el repartidor |
 | `REGISTRY_REFRESH_ENABLED` | `true` | Refrescar los padrones desde el servicio |
@@ -104,6 +114,13 @@ No se rutea por el gateway todavía.
 | `NEWS_MODEL` | `gpt-6-luna` | Modelo de OpenAI que busca y lee |
 | `NEWS_MAX_SEARCHES` | `5` | Búsquedas como máximo por pagador (cada una cuesta unos $0,01) |
 | `NEWS_CACHE_DAYS` | `7` | Cuánto se reutiliza la búsqueda de un pagador |
+| `GREEN_ENABLED` | `true` | Leer los certificados verdes (con la misma `OPENAI_API_KEY`); sin clave, las subidas quedan sin decidir |
+| `GREEN_MODEL` | `gpt-6-luna` | Modelo de OpenAI que lee el certificado |
+| `GREEN_REASONING_EFFORT` | `low` | Cuánto razona: solo transcribe |
+| `GREEN_DOCUMENTS_BASE_URL` | `http://localhost:9100/vankoo-profile-documents` | El bucket de Profile **visto desde este servicio** (`http://minio:9000/…` dentro de Docker) |
+| `GREEN_MAX_BYTES` | `10485760` | Tamaño máximo del certificado |
+| `GREEN_PROFILE_GROUP_ID` | `risk-profile-sustainability-v1` | Grupo de consumidores del tópico de Profile |
+| `GREEN_PROFILE_OFFSET_RESET` | `earliest` | Dónde empieza ese grupo la primera vez. `earliest` a propósito: el tópico de Profile puede crearse después de que arranque risk, y con `latest` se saltaría el primer certificado |
 | `DOCS_ENABLED` | `true` | Servir `/docs` |
 
 ## Pruebas
@@ -119,5 +136,6 @@ Los tests usan dobles en memoria: no necesitan PostgreSQL, Kafka ni una clave de
 ## Información adicional
 
 - Sigue la skill `ddd-fastapi`, instalada en `.agents/skills/ddd-fastapi` (se actualiza con `npx skills update`).
-- Contrato que consume: `docs/contracts/auction-lifecycle/v1` en `vankoo-investment-service`. Sus ejemplos están copiados en `tests/contracts/`.
+- Contratos que consume: `docs/contracts/auction-lifecycle/v1` en `vankoo-investment-service` y `SustainabilityCertificateSubmitted` en `vankoo-profile-service`. Sus ejemplos están copiados en `tests/contracts/`.
+- Contrato que publica: [docs/contracts/green-certifications/v1](docs/contracts/green-certifications/v1/README.md).
 - Convenciones del repo: [docs/CONVENTIONS.md](docs/CONVENTIONS.md).

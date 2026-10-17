@@ -4,7 +4,7 @@ from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any, cast
 
-from assessments.application.acl import ExternalRegistriesService
+from assessments.application.acl import ExternalRegistriesService, ExternalSustainabilityService
 from assessments.application.outbound_services import (
     AuctionEvaluationService,
     CreditBureau,
@@ -24,6 +24,7 @@ from assessments.domain.value_objects import (
     Currency,
     DeliveryStatus,
     GradingDecision,
+    GreenCertificate,
     Money,
     NewsScreening,
     Payer,
@@ -34,6 +35,7 @@ from assessments.domain.value_objects import (
 from registries.interfaces.acl import PayerStandingRecord
 from shared.application.events import EventBus
 from shared.application.messaging import Inbox
+from sustainability.interfaces.acl import GreenStatusRecord
 
 NOW = datetime(2026, 10, 14, 18, 0, tzinfo=UTC)
 
@@ -53,6 +55,7 @@ class InMemoryRiskAssessmentRepository(RiskAssessmentRepository):
                 risk_assessment.decision,
                 risk_assessment.assessed_at,
                 risk_assessment.source_event_id,
+                green=risk_assessment.green,
                 delivery_status=risk_assessment.delivery_status,
                 delivery_attempts=risk_assessment.delivery_attempts,
                 next_delivery_at=risk_assessment.next_delivery_at,
@@ -124,6 +127,7 @@ class StubEvaluationService(AuctionEvaluationService):
         risk_grade: str,
         full_balance_outstanding: bool,
         assessed_at: datetime,
+        green_certificate: GreenCertificate | None = None,
     ) -> EvaluationOutcome:
         return self._answer(
             {
@@ -133,6 +137,7 @@ class StubEvaluationService(AuctionEvaluationService):
                 "risk_grade": risk_grade,
                 "full_balance_outstanding": full_balance_outstanding,
                 "assessed_at": assessed_at,
+                "green_certificate": green_certificate,
             }
         )
 
@@ -184,6 +189,18 @@ class FakeRegistriesFacade:
     async def payer_standing(self, ruc: str) -> PayerStandingRecord:
         self.asked.append(ruc)
         return self.standing
+
+
+class FakeSustainabilityFacade:
+    """Answers every MYPE with the same green status; stands in for the Sustainability facade."""
+
+    def __init__(self, status: GreenStatusRecord | None = None) -> None:
+        self.status = status or GreenStatusRecord(status="NO_CERTIFICATE")
+        self.asked: list[tuple[str, date]] = []
+
+    async def green_status(self, mype_user_id: str, today: date) -> GreenStatusRecord:
+        self.asked.append((mype_user_id, today))
+        return self.status
 
 
 class FixedCreditBureau(CreditBureau):
@@ -251,6 +268,7 @@ class ServiceUnderTest:
     unit_of_work: FakeUnitOfWork
     evaluations: StubEvaluationService
     registries: FakeRegistriesFacade
+    sustainability: FakeSustainabilityFacade
     credit_bureau: FixedCreditBureau
     news_screener: FakeNewsScreener
     news_screenings: InMemoryNewsScreenings
@@ -263,6 +281,7 @@ def build_service(
     standing: PayerStandingRecord = ACTIVE_COMPANY,
     credit: CreditReport | None = None,
     news: FakeNewsScreener | None = None,
+    green: GreenStatusRecord | None = None,
 ) -> ServiceUnderTest:
     """Wire the application service to fresh fakes and the points policy."""
     repository = InMemoryRiskAssessmentRepository()
@@ -270,6 +289,7 @@ def build_service(
     unit_of_work = FakeUnitOfWork()
     stub = evaluations or StubEvaluationService()
     registries = FakeRegistriesFacade(standing)
+    sustainability = FakeSustainabilityFacade(green)
     credit_bureau = FixedCreditBureau(credit)
     news_screener = news or FakeNewsScreener()
     news_screenings = InMemoryNewsScreenings()
@@ -279,6 +299,7 @@ def build_service(
         repository,
         inbox,
         ExternalRegistriesService(cast(Any, registries)),
+        ExternalSustainabilityService(cast(Any, sustainability)),
         credit_bureau,
         news_screener,
         news_screenings,
@@ -295,6 +316,7 @@ def build_service(
         unit_of_work,
         stub,
         registries,
+        sustainability,
         credit_bureau,
         news_screener,
         news_screenings,

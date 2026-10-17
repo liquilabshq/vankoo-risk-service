@@ -38,8 +38,10 @@ class KafkaSettings(BaseSettings):
         auto_offset_reset (str): Where a group with no committed offset starts.
             ``latest`` on purpose: the topics keep every event forever, and
             replaying old auctions would re-grade them.
-        consumer_enabled (bool): Start the consumer with the application. Off in
+        consumer_enabled (bool): Start the consumers with the application. Off in
             tests and when only running migrations.
+        producer_enabled (bool): Start the outbox relay that sends this
+            service's events. Off in tests.
     """
 
     model_config = SettingsConfigDict(env_file=".env", env_prefix="KAFKA_", extra="ignore")
@@ -48,6 +50,7 @@ class KafkaSettings(BaseSettings):
     group_id: str = "risk-auction-assessment-v1"
     auto_offset_reset: Literal["latest", "earliest"] = "latest"
     consumer_enabled: bool = True
+    producer_enabled: bool = True
 
 
 settings = Settings()

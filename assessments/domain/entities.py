@@ -7,6 +7,7 @@ from assessments.domain.value_objects import (
     AuctionFacts,
     DeliveryStatus,
     GradingDecision,
+    GreenCheck,
     RiskGrade,
 )
 from shared.domain.entities import AggregateRoot
@@ -31,6 +32,7 @@ class RiskAssessment(AggregateRoot):
         assessment_id (AssessmentId): The identifier Investment stores.
         facts (AuctionFacts): What the grade was decided from.
         decision (GradingDecision): The grade and the policy that gave it.
+        green (GreenCheck): Whether the auction is green, from its MYPE's certificate.
         assessed_at (datetime): When the grade was decided, in UTC.
         source_event_id (str): The Kafka event the assessment came from.
         delivery_status (DeliveryStatus): Where the delivery to Investment is.
@@ -49,6 +51,7 @@ class RiskAssessment(AggregateRoot):
         assessed_at: datetime,
         source_event_id: str,
         *,
+        green: GreenCheck | None = None,
         delivery_status: DeliveryStatus = DeliveryStatus.PENDING,
         delivery_attempts: int = 0,
         next_delivery_at: datetime | None = None,
@@ -77,6 +80,7 @@ class RiskAssessment(AggregateRoot):
         self._assessment_id = assessment_id
         self._facts = facts
         self._decision = decision
+        self._green = green or GreenCheck.not_checked()
         self._assessed_at = assessed_at
         self._source_event_id = source_event_id.strip()
         self._delivery_status = delivery_status
@@ -94,6 +98,7 @@ class RiskAssessment(AggregateRoot):
         decision: GradingDecision,
         source_event_id: str,
         now: datetime,
+        green: GreenCheck | None = None,
     ) -> "RiskAssessment":
         """Decide on an auction and schedule the delivery of the decision right away.
 
@@ -103,6 +108,8 @@ class RiskAssessment(AggregateRoot):
             decision (GradingDecision): What the grading policy concluded.
             source_event_id (str): The Kafka event the facts came from.
             now (datetime): The current time, in UTC.
+            green (GreenCheck | None): Whether the auction is green; not checked
+                when it is not eligible.
 
         Returns:
             RiskAssessment: The new assessment, with ``RiskAssessmentIssued`` recorded.
@@ -110,7 +117,9 @@ class RiskAssessment(AggregateRoot):
         Raises:
             DomainError: If ``now`` has no time zone.
         """
-        assessment = cls(assessment_id, facts, decision, now, source_event_id, next_delivery_at=now)
+        if green is not None and green.green and not decision.eligible:
+            raise DomainError("An auction that is not eligible cannot be green")
+        assessment = cls(assessment_id, facts, decision, now, source_event_id, green=green, next_delivery_at=now)
         assessment.record_event(
             RiskAssessmentIssued(
                 auction_id=facts.auction_id.value,
@@ -144,6 +153,11 @@ class RiskAssessment(AggregateRoot):
     def grade(self) -> RiskGrade | None:
         """The risk class given to the auction; ``None`` if it is not eligible."""
         return self._decision.grade
+
+    @property
+    def green(self) -> GreenCheck:
+        """Whether the auction is green, from its MYPE's certificate."""
+        return self._green
 
     @property
     def eligible(self) -> bool:

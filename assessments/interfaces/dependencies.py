@@ -12,7 +12,7 @@ from fastapi import Depends, Request
 from openai import AsyncOpenAI
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from assessments.application.acl import ExternalRegistriesService
+from assessments.application.acl import ExternalRegistriesService, ExternalSustainabilityService
 from assessments.application.outbound_services import CreditBureau, NewsScreener
 from assessments.application.services import RiskAssessmentApplicationService
 from assessments.domain.services import PointsGradingPolicy, RiskGradingPolicy
@@ -28,6 +28,7 @@ from registries.interfaces.acl import RegistriesContextFacade
 from shared.application.events import event_bus
 from shared.infrastructure.messaging import SqlAlchemyInbox
 from shared.interfaces.dependencies import SessionDep
+from sustainability.interfaces.acl import SustainabilityContextFacade
 
 
 def build_grading_policy() -> RiskGradingPolicy:
@@ -83,6 +84,7 @@ def build_risk_assessment_service(
         SqlAlchemyRiskAssessmentRepository(session),
         SqlAlchemyInbox(session),
         ExternalRegistriesService(RegistriesContextFacade(session)),
+        ExternalSustainabilityService(SustainabilityContextFacade(session)),
         build_credit_bureau(),
         news_screener,
         SqlAlchemyNewsScreeningRepository(session),
