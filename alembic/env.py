@@ -17,6 +17,8 @@ from sqlalchemy.ext.asyncio import create_async_engine
 import assessments.infrastructure.models  # noqa: F401
 import registries.infrastructure.models  # noqa: F401
 import shared.infrastructure.messaging  # noqa: F401
+import shared.infrastructure.outbox  # noqa: F401
+import sustainability.infrastructure.models  # noqa: F401
 from shared.infrastructure.models import Base
 from shared.infrastructure.settings import settings
 
