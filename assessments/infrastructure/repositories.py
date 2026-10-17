@@ -19,6 +19,10 @@ from assessments.domain.value_objects import (
     Currency,
     DeliveryStatus,
     GradingDecision,
+    GreenCertificate,
+    GreenCheck,
+    GreenCriterion,
+    GreenStatus,
     Money,
     NewsCategory,
     NewsFinding,
@@ -82,6 +86,8 @@ class SqlAlchemyRiskAssessmentRepository(RiskAssessmentRepository):
             invoice_amount=facts.invoice_amount.amount,
             invoice_currency=facts.invoice_amount.currency.value,
             green_certified=facts.green_certified,
+            green_status=assessment.green.status.value,
+            green_certificate=_certificate_to_json(assessment.green.certificate),
             eligible=decision.eligible,
             risk_grade=decision.grade.value if decision.grade is not None else None,
             score=decision.score,
@@ -132,6 +138,10 @@ class SqlAlchemyRiskAssessmentRepository(RiskAssessmentRepository):
             ),
             model.assessed_at,
             model.source_event_id,
+            green=GreenCheck(
+                GreenStatus(model.green_status or GreenStatus.NOT_CHECKED.value),
+                _certificate_from_json(model.green_certificate),
+            ),
             delivery_status=DeliveryStatus(model.delivery_status),
             delivery_attempts=model.delivery_attempts,
             next_delivery_at=model.next_delivery_at,
@@ -198,4 +208,28 @@ def _finding_from_json(item: dict[str, Any]) -> NewsFinding:
         url=str(item["url"]),
         published_on=date.fromisoformat(published) if published else None,
         summary=str(item.get("summary") or ""),
+    )
+
+
+def _certificate_to_json(certificate: GreenCertificate | None) -> dict[str, Any] | None:
+    if certificate is None:
+        return None
+    return {
+        "certificationId": certificate.certification_id,
+        "standard": certificate.standard,
+        "issuer": certificate.issuer,
+        "validUntil": certificate.valid_until.isoformat(),
+        "criteria": [{"code": item.code, "detail": item.detail} for item in certificate.criteria],
+    }
+
+
+def _certificate_from_json(data: dict[str, Any] | None) -> GreenCertificate | None:
+    if data is None:
+        return None
+    return GreenCertificate(
+        certification_id=str(data["certificationId"]),
+        standard=str(data["standard"]),
+        issuer=str(data["issuer"]),
+        valid_until=date.fromisoformat(str(data["validUntil"])),
+        criteria=tuple(GreenCriterion(str(item["code"]), str(item["detail"])) for item in data["criteria"]),
     )

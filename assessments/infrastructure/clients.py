@@ -4,7 +4,8 @@ It calls ``PUT /api/v1/internal/auctions/{auctionId}/evaluation`` for a grade
 and ``POST /api/v1/internal/auctions/{auctionId}/rejection`` for an invoice
 that is not eligible, directly on Investment (the gateway does not route
 ``/internal``), and translates the
-answer into what the application layer understands. The one ``AsyncClient``
+answer into what the application layer understands. A green auction's grade
+travels with its certificate (``greenCertification``). The one ``AsyncClient``
 of the process is created in the lifespan and shared; this class never closes it.
 """
 import logging
@@ -19,12 +20,16 @@ from assessments.application.outbound_services import (
     EvaluationOutcomeKind,
     InvestmentUnavailableError,
 )
+from assessments.domain.value_objects import GreenCertificate
 
 logger = logging.getLogger(__name__)
 
 EVALUATION_PATH = "/api/v1/internal/auctions/{auction_id}/evaluation"
 REJECTION_PATH = "/api/v1/internal/auctions/{auction_id}/rejection"
 MESSAGE_MAX_LENGTH = 500
+# What Investment's GreenCertificationResource accepts.
+GREEN_ISSUER_MAX_LENGTH = 200
+GREEN_DETAIL_MAX_LENGTH = 300
 
 # Investment answers these when the evaluation can never succeed: the auction
 # does not exist (404) or no longer accepts one, or the assessment id was used
@@ -51,13 +56,25 @@ class HttpxAuctionEvaluationService(AuctionEvaluationService):
         risk_grade: str,
         full_balance_outstanding: bool,
         assessed_at: datetime,
+        green_certificate: GreenCertificate | None = None,
     ) -> EvaluationOutcome:
-        body = {
+        body: dict[str, object] = {
             "assessmentId": assessment_id,
             "riskGrade": risk_grade,
             "fullBalanceOutstanding": full_balance_outstanding,
             "assessedAt": format_instant(assessed_at),
         }
+        if green_certificate is not None:
+            body["greenCertification"] = {
+                "certificationId": green_certificate.certification_id,
+                "standard": green_certificate.standard,
+                "issuer": green_certificate.issuer[:GREEN_ISSUER_MAX_LENGTH],
+                "validUntil": green_certificate.valid_until.isoformat(),
+                "criteria": [
+                    {"code": criterion.code, "detail": criterion.detail[:GREEN_DETAIL_MAX_LENGTH]}
+                    for criterion in green_certificate.criteria
+                ],
+            }
         return await self._send("PUT", EVALUATION_PATH.format(auction_id=auction_id), body, auction_id)
 
     async def reject(

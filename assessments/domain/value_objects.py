@@ -446,3 +446,92 @@ class GradingDecision:
             raise DomainError("An eligible decision must carry a grade")
         if not self.eligible and (self.grade is not None or not self.rejection_code or not self.rejection_reason):
             raise DomainError("A rejection carries a code and a reason, and no grade")
+
+
+class GreenStatus(StrEnum):
+    """Whether the MYPE behind an auction is green, and why not when it is not.
+
+    ``NOT_CHECKED`` is for an auction that is not eligible: its green does not matter.
+    """
+
+    GREEN = "GREEN"
+    NO_CERTIFICATE = "NO_CERTIFICATE"
+    NOT_GREEN = "NOT_GREEN"
+    EXPIRED = "EXPIRED"
+    ENVIRONMENTAL_OFFENDER = "ENVIRONMENTAL_OFFENDER"
+    NOT_CHECKED = "NOT_CHECKED"
+
+
+@dataclass(frozen=True, slots=True)
+class GreenCriterion:
+    """One check the MYPE's certificate passed, as Investment shows it to investors.
+
+    Attributes:
+        code (str): Which check, e.g. ``IN_FORCE``.
+        detail (str): What was found, in Spanish.
+    """
+
+    code: str
+    detail: str
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class GreenCertificate:
+    """The certificate that makes the MYPE green, as Sustainability decided it.
+
+    Attributes:
+        certification_id (str): Sustainability's identifier of the decision.
+        standard (str): ``ISO_14001`` or ``ISO_50001``.
+        issuer (str): The certification body.
+        valid_until (date): When it expires.
+        criteria (tuple[GreenCriterion, ...]): The checks it passed.
+    """
+
+    certification_id: str
+    standard: str
+    issuer: str
+    valid_until: date
+    criteria: tuple[GreenCriterion, ...]
+
+    def __post_init__(self) -> None:
+        """Reject a certificate without the facts Investment needs.
+
+        Raises:
+            DomainError: If a reference is blank or there are no criteria.
+        """
+        if not self.certification_id.strip() or not self.standard.strip() or not self.issuer.strip():
+            raise DomainError("A green certificate names its decision, its standard and its issuer")
+        if not self.criteria:
+            raise DomainError("A green certificate keeps the checks it passed")
+
+
+@dataclass(frozen=True, slots=True)
+class GreenCheck:
+    """Whether the auction is green: the MYPE's status that day, and its certificate when it is green.
+
+    Attributes:
+        status (GreenStatus): ``GREEN``, or why not.
+        certificate (GreenCertificate | None): Present exactly when it is green.
+    """
+
+    status: GreenStatus
+    certificate: GreenCertificate | None = None
+
+    def __post_init__(self) -> None:
+        """Keep the certificate and the green status together.
+
+        Raises:
+            DomainError: If a green check has no certificate, or another one has.
+        """
+        if (self.status is GreenStatus.GREEN) != (self.certificate is not None):
+            raise DomainError("A green check carries a certificate, and only a green one does")
+
+    @property
+    def green(self) -> bool:
+        """Whether the auction is green."""
+        return self.status is GreenStatus.GREEN
+
+    @classmethod
+    def not_checked(cls) -> "GreenCheck":
+        """The check of an auction that is not eligible."""
+        return cls(GreenStatus.NOT_CHECKED)

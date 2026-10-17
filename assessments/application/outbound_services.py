@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 
-from assessments.domain.value_objects import CreditReport, NewsScreening, Ruc
+from assessments.domain.value_objects import CreditReport, GreenCertificate, NewsScreening, Ruc
 
 
 class EvaluationOutcomeKind(StrEnum):
@@ -87,11 +87,12 @@ class AuctionEvaluationService(ABC):
         risk_grade: str,
         full_balance_outstanding: bool,
         assessed_at: datetime,
+        green_certificate: GreenCertificate | None = None,
     ) -> EvaluationOutcome:
-        """Send the grade to Investment.
+        """Send the grade to Investment, and the certificate that makes the auction green, if any.
 
         Sending the same assessment again is safe: Investment ignores an
-        assessment id it already applied with the same grade.
+        assessment id it already applied with the same grade and certificate.
 
         Args:
             auction_id (str): The auction being graded.
@@ -99,6 +100,7 @@ class AuctionEvaluationService(ABC):
             risk_grade (str): ``A``, ``B`` or ``C``.
             full_balance_outstanding (bool): Whether the invoice is fully owed.
             assessed_at (datetime): When the grade was decided, in UTC.
+            green_certificate (GreenCertificate | None): Present when the auction is green.
 
         Returns:
             EvaluationOutcome: Investment's final answer.

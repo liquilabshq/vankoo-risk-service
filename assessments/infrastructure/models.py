@@ -35,6 +35,8 @@ class RiskAssessmentModel(AuditableModel, Base):
     invoice_amount: Mapped[Decimal] = mapped_column(Numeric(18, 2))
     invoice_currency: Mapped[str] = mapped_column(String(3))
     green_certified: Mapped[bool] = mapped_column(Boolean)
+    green_status: Mapped[str | None] = mapped_column(String(30))
+    green_certificate: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     eligible: Mapped[bool] = mapped_column(Boolean, server_default=text("true"))
     risk_grade: Mapped[str | None] = mapped_column(String(1))
     score: Mapped[int | None] = mapped_column(Integer)
