@@ -12,3 +12,5 @@ docs
 .env
 .env.*
 !.env.example
+# Demonstration CA and its private keys: mounted by docker-compose.kyc-demo.yaml, never baked in.
+demo-kyc/
