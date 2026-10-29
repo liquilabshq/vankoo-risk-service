@@ -5,7 +5,8 @@ from datetime import date
 
 import pytest
 
-from sustainability.domain.services import GreenCertificationPolicy, normalize_company_name
+from shared.domain.names import normalize_company_name
+from sustainability.domain.services import GreenCertificationPolicy
 from sustainability.domain.value_objects import (
     CertificateExtraction,
     CompanyStanding,
