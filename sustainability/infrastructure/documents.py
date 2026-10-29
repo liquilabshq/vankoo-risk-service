@@ -1,12 +1,16 @@
-"""Adapter that downloads certificates from Profile's bucket over HTTP.
+"""Adapter that downloads certificates from Profile's bucket.
 
-Profile's bucket allows anonymous reads (its ``fileUrl`` is public), so a plain
-GET is enough. The base URL is this service's own way into the bucket, never
-one that arrives in an event: the event only names the object key, which the
-domain already checked is under a company's sustainability folder.
+The download itself is the shared kernel's (``shared.infrastructure.documents``);
+this adapter adds what a certificate must be: a PDF, JPEG or PNG under its limit.
 """
 import httpx
 
+from shared.infrastructure.documents import (
+    DocumentMissingError,
+    DocumentTooLargeError,
+    StorageUnavailableError,
+    download_document,
+)
 from sustainability.application.outbound_services import (
     CertificateDocuments,
     DocumentRejectedError,
@@ -37,20 +41,15 @@ class HttpxCertificateDocuments(CertificateDocuments):
 
     async def fetch(self, document: CertificateDocument) -> bytes:
         try:
-            async with self._client.stream("GET", document.object_key) as response:
-                if response.status_code in (httpx.codes.NOT_FOUND, httpx.codes.FORBIDDEN):
-                    raise DocumentRejectedError("No se encontró el archivo del certificado")
-                if not response.is_success:
-                    raise TemporarilyUnavailableError(f"The storage answered HTTP {response.status_code}")
-                content = bytearray()
-                async for chunk in response.aiter_bytes():
-                    content.extend(chunk)
-                    if len(content) > self._max_bytes:
-                        raise DocumentRejectedError(
-                            f"El archivo supera el máximo de {self._max_bytes // (1024 * 1024)} MB"
-                        )
-        except httpx.HTTPError as error:
-            raise TemporarilyUnavailableError(f"{type(error).__name__}: {error}") from error
+            content = await download_document(self._client, document.object_key, self._max_bytes)
+        except DocumentMissingError:
+            raise DocumentRejectedError("No se encontró el archivo del certificado") from None
+        except DocumentTooLargeError:
+            raise DocumentRejectedError(
+                f"El archivo supera el máximo de {self._max_bytes // (1024 * 1024)} MB"
+            ) from None
+        except StorageUnavailableError as error:
+            raise TemporarilyUnavailableError(str(error)) from error
         if not content.startswith(MAGIC_NUMBERS[document.document_type]):
             raise DocumentRejectedError("El archivo no es un PDF, JPG o PNG válido")
-        return bytes(content)
+        return content

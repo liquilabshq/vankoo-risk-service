@@ -2,7 +2,7 @@
 
 Assembles the application: registers every bounded context's router, the
 exception handlers and the event handlers, starts the Kafka consumers (Investment's
-auctions and Profile's certificates), the delivery worker, the outbox relay and
+auctions, Profile's certificates and Profile's verification requests), the delivery worker, the outbox relay and
 the daily refresh of SUNAT's registries, and closes everything on shutdown. The schema is Alembic's
 job (``alembic upgrade head``), never this module's.
 
@@ -48,12 +48,22 @@ from sustainability.interfaces.dependencies import (
     build_documents_client,
     build_green_certification_service,
 )
+from verification.application.event_handlers import register_event_handlers as register_verification_event_handlers
+from verification.application.services import CompanyVerificationApplicationService
+from verification.infrastructure.settings import kyc_settings
+from verification.interfaces.consumers import VerificationRequestsConsumer
+from verification.interfaces.dependencies import build_company_verification_service, build_ruc_document_inspector
 
 # Uvicorn configures its own loggers only; without this, the application's
 # INFO messages (an event handler's, for one) are silently dropped.
 logging.basicConfig(level=logging.INFO, format="%(levelname)s:     %(name)s - %(message)s")
 # aiokafka logs every rebalance and fetch at INFO; its warnings are enough.
 logging.getLogger("aiokafka").setLevel(logging.WARNING)
+# pyHanko logs, with a traceback, every certificate path it cannot build: the TSA
+# timestamp of every ficha RUC, and a demo ficha checked against SUNAT's chain.
+# The inspector logs what matters itself.
+logging.getLogger("pyhanko").setLevel(logging.ERROR)
+logging.getLogger("pyhanko_certvalidator").setLevel(logging.ERROR)
 
 
 @asynccontextmanager
@@ -83,6 +93,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     def build_green_service(session: AsyncSession) -> GreenCertificationApplicationService:
         return build_green_certification_service(session, documents_client, certificate_reader)
 
+    ruc_document_inspector = build_ruc_document_inspector()
+
+    def build_verification_service(session: AsyncSession) -> CompanyVerificationApplicationService:
+        return build_company_verification_service(session, documents_client, ruc_document_inspector)
+
     worker = EvaluationDeliveryWorker(session_factory, build_service)
     consumer = AuctionLifecycleConsumer(kafka_settings, session_factory, build_service)
     profile_consumer = ProfileEventsConsumer(
@@ -92,9 +107,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         build_green_service,
         green_settings.profile_offset_reset,
     )
+    verification_consumer = VerificationRequestsConsumer(
+        kafka_settings,
+        kyc_settings.profile_group_id,
+        session_factory,
+        build_verification_service,
+        kyc_settings.profile_offset_reset,
+    )
     relay = KafkaOutboxRelay(kafka_settings, session_factory)
     register_assessments_event_handlers(event_bus, worker.wake)
     register_sustainability_event_handlers(event_bus, relay.wake)
+    register_verification_event_handlers(event_bus, relay.wake)
 
     tasks: list[BackgroundTask] = []
     checks: dict[str, ReadinessCheck] = {}
@@ -104,6 +127,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         checks["auction_lifecycle_consumer"] = lambda: consumer.ready
         tasks.append(BackgroundTask("profile-events-consumer", profile_consumer.run))
         checks["profile_events_consumer"] = lambda: profile_consumer.ready
+        tasks.append(BackgroundTask("verification-requests-consumer", verification_consumer.run))
+        checks["verification_requests_consumer"] = lambda: verification_consumer.ready
     if kafka_settings.producer_enabled:
         relay_task = BackgroundTask("outbox-relay", relay.run)
         tasks.append(relay_task)
