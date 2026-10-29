@@ -10,3 +10,6 @@ __pycache__/
 .coverage
 htmlcov/
 .DS_Store
+
+# Demonstration CA and fichas (python -m verification demo-ca): never commit them.
+demo-kyc/
