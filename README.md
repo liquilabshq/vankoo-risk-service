@@ -6,6 +6,8 @@ Califica al **pagador** con datos públicos (padrón de SUNAT, agentes de retenc
 
 Decide también si la **MYPE** es verde: lee con IA el certificado ambiental (ISO 14001 o ISO 50001) que subió a su perfil, lo comprueba con reglas fijas contra SUNAT y OEFA y marca como verdes sus subastas: ver [docs/GREEN_RULES.md](docs/GREEN_RULES.md).
 
+Y verifica a la **MYPE** (KYC): comprueba sin salir a internet la firma digital de SUNAT de su ficha RUC, la lee y la contrasta con el padrón y la lista SSCO, con reglas fijas y sin IA: ver [docs/KYC_RULES.md](docs/KYC_RULES.md).
+
 ## Qué hace
 
 1. Escucha `AuctionCreated` en el tópico `investment.auction-lifecycle.v1`.
@@ -21,6 +23,12 @@ Y, para el verde (contexto `sustainability`):
 2. Descarga el certificado del bucket de Profile, lo lee con OpenAI y lo decide con las reglas `green-v1`.
 3. Publica `GreenCertificationIssued` en `risk.green-certifications.v1` desde un outbox, para que Profile lo muestre.
 4. Al calificar una subasta elegible, adjunta el certificado de su MYPE si sigue siendo verde ese día.
+
+Y, para el KYC (contexto `verification`):
+
+1. Escucha `CompanyVerificationRequested` en `vankoo.profile.events`, en su propio grupo.
+2. Descarga la ficha RUC del bucket de Profile, verifica su firma con pyHanko y la decide con las reglas `kyc-v1`.
+3. Publica `CompanyVerificationIssued` en `risk.company-verifications.v1` desde el outbox; Profile decide el estado KYC con eso.
 
 ## Los padrones de SUNAT
 
@@ -121,6 +129,10 @@ No se rutea por el gateway todavía.
 | `GREEN_MAX_BYTES` | `10485760` | Tamaño máximo del certificado |
 | `GREEN_PROFILE_GROUP_ID` | `risk-profile-sustainability-v1` | Grupo de consumidores del tópico de Profile |
 | `GREEN_PROFILE_OFFSET_RESET` | `earliest` | Dónde empieza ese grupo la primera vez. `earliest` a propósito: el tópico de Profile puede crearse después de que arranque risk, y con `latest` se saltaría el primer certificado |
+| `KYC_MAX_BYTES` | `5242880` | Tamaño máximo de la ficha RUC (se descarga con `GREEN_DOCUMENTS_BASE_URL`) |
+| `KYC_PROFILE_GROUP_ID` | `risk-profile-verification-v1` | Grupo de consumidores del tópico de Profile para el KYC |
+| `KYC_PROFILE_OFFSET_RESET` | `earliest` | Dónde empieza ese grupo la primera vez, como `GREEN_PROFILE_OFFSET_RESET` |
+| `KYC_DEMO_CA_PATH` | — | **Parche temporal para demos**: la CA de demostración (`python -m verification demo-ca`). Con ella, las fichas de demo se aceptan marcadas `demo`. **Nunca en producción** |
 | `DOCS_ENABLED` | `true` | Servir `/docs` |
 
 ## Pruebas
@@ -136,6 +148,6 @@ Los tests usan dobles en memoria: no necesitan PostgreSQL, Kafka ni una clave de
 ## Información adicional
 
 - Sigue la skill `ddd-fastapi`, instalada en `.agents/skills/ddd-fastapi` (se actualiza con `npx skills update`).
-- Contratos que consume: `docs/contracts/auction-lifecycle/v1` en `vankoo-investment-service` y `SustainabilityCertificateSubmitted` en `vankoo-profile-service`. Sus ejemplos están copiados en `tests/contracts/`.
-- Contrato que publica: [docs/contracts/green-certifications/v1](docs/contracts/green-certifications/v1/README.md).
+- Contratos que consume: `docs/contracts/auction-lifecycle/v1` en `vankoo-investment-service` y `SustainabilityCertificateSubmitted` y `CompanyVerificationRequested` en `vankoo-profile-service`. Sus ejemplos están copiados en `tests/contracts/`.
+- Contratos que publica: [docs/contracts/green-certifications/v1](docs/contracts/green-certifications/v1/README.md) y [docs/contracts/company-verifications/v1](docs/contracts/company-verifications/v1/README.md).
 - Convenciones del repo: [docs/CONVENTIONS.md](docs/CONVENTIONS.md).

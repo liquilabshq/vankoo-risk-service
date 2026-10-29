@@ -2,13 +2,14 @@
 
 ## Contextos
 
-Tres contextos acotados, cada uno con las cuatro capas de la skill `ddd-fastapi`:
+Cuatro contextos acotados, cada uno con las cuatro capas de la skill `ddd-fastapi`:
 
 - `assessments` decide sobre cada subasta.
 - `registries` guarda la copia local de los padrones de SUNAT y de las listas de sanciones (SUNAT, OECE, OEFA).
 - `sustainability` decide si una MYPE es verde a partir del certificado que subió a su perfil.
+- `verification` comprueba que una MYPE es quien dice ser (su KYC) con su ficha RUC firmada por SUNAT.
 
-Un contexto le pregunta a otro solo por su fachada (`interfaces/acl.py`), a través de su propio `application/acl.py`, que es el único módulo que la importa. `assessments` pregunta a `registries` por el pagador y a `sustainability` por la MYPE; `sustainability` pregunta a `registries` por la razón social y por OEFA.
+Un contexto le pregunta a otro solo por su fachada (`interfaces/acl.py`), a través de su propio `application/acl.py`, que es el único módulo que la importa. `assessments` pregunta a `registries` por el pagador y a `sustainability` por la MYPE; `sustainability` pregunta a `registries` por la razón social y por OEFA, y `verification` por el padrón, la SSCO y las demás sanciones.
 
 ### `assessments`
 
@@ -40,6 +41,17 @@ La carga del padrón (1,6 GB, unos 18 M de filas) corre siempre en **otro proces
 | `interfaces/` | El consumidor de `vankoo.profile.events`, el parser de `SustainabilityCertificateSubmitted` y la fachada `green_status` para `assessments` |
 
 La IA solo transcribe el certificado y las reglas deciden. Comprueba coherencia con SUNAT y OEFA, no autenticidad: ver [GREEN_RULES.md](GREEN_RULES.md).
+
+### `verification`
+
+| Capa | Qué hay |
+|---|---|
+| `domain/` | El agregado `CompanyVerification` (la decisión sobre una solicitud, con cada regla y su resultado), sus value objects (`Applicant`, `RucDocument`, `RucDocumentInspection`, `TaxpayerStanding`, `CheckResult`, `FieldError`, `Evidence`…), el evento `CompanyVerificationDecided` y la política `KycPolicy` (`kyc-v1`) |
+| `application/` | `CompanyVerificationApplicationService` (verificar una solicitud), los puertos `RucDocuments`, `RucDocumentInspector` y `CompanyVerificationPublisher`, y la ACL hacia `registries` |
+| `infrastructure/` | Tabla `company_verifications`, la descarga desde el bucket de Profile, `PdfRucDocumentInspector` (firma con pyHanko contra las CA fijadas en `trust/`, texto con pypdf), el publicador que escribe en el outbox y la demo (`demo.py`, **parche temporal**) |
+| `interfaces/` | El consumidor de `vankoo.profile.events` (su propio grupo), el parser de `CompanyVerificationRequested` y el comando `python -m verification demo-ca`/`demo-ficha` |
+
+La firma de SUNAT prueba la ficha sin consultar su web, y las reglas deciden sin IA: ver [KYC_RULES.md](KYC_RULES.md). Risk recomienda; el estado KYC lo decide y lo guarda Profile.
 
 ### `shared`
 
