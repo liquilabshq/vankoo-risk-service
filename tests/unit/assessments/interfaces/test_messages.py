@@ -37,6 +37,8 @@ def test_auction_created_example_is_read() -> None:
 @pytest.mark.parametrize(
     "name",
     [
+        "auction-evaluated",
+        "auction-rejected",
         "auction-published",
         "partition-added",
         "auction-fully-funded",

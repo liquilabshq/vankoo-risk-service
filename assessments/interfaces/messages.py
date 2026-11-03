@@ -26,6 +26,8 @@ AUCTION_CREATED = "AuctionCreated"
 KNOWN_EVENT_TYPES = frozenset(
     {
         AUCTION_CREATED,
+        "AuctionEvaluated",
+        "AuctionRejected",
         "AuctionPublished",
         "PartitionAdded",
         "AuctionFullyFunded",
