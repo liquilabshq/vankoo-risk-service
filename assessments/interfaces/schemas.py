@@ -132,3 +132,39 @@ class RiskAssessmentResponse(BaseModel):
             delivered_at=assessment.delivered_at,
             investment_auction_status=assessment.investment_auction_status,
         )
+
+
+class MypeRiskAssessmentResponse(BaseModel):
+    """What the MYPE may see of its own invoice's risk assessment.
+
+    The decision and its reasons, without the delivery bookkeeping or the inputs
+    Investment sent: ``factors`` lists every reason with the points it weighed,
+    ``score`` and ``risk_grade`` what they added up to, and ``rejection_code`` and
+    ``rejection_reason`` why it cannot be funded when ``eligible`` is false.
+    """
+
+    auction_id: str
+    invoice_id: str
+    payer_ruc: str
+    payer_name: str
+    eligible: bool
+    risk_grade: RiskGrade | None
+    score: int | None
+    factors: list[ScoreFactorResponse]
+    rejection_code: str | None
+    rejection_reason: str | None
+    provisional: bool
+    assessed_at: datetime
+
+    @classmethod
+    def from_entity(cls, assessment: RiskAssessment) -> "MypeRiskAssessmentResponse":
+        """Build the response from the aggregate.
+
+        Args:
+            assessment (RiskAssessment): A stored assessment.
+
+        Returns:
+            MypeRiskAssessmentResponse: What its MYPE may see of it.
+        """
+        full = RiskAssessmentResponse.from_entity(assessment)
+        return cls(**full.model_dump(include=set(cls.model_fields)))

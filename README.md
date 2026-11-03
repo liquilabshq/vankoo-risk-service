@@ -93,11 +93,12 @@ docker compose up -d --build risk-service
 
 | Método | Ruta | Qué hace |
 |---|---|---|
-| GET | `/api/v1/risk-assessments/{auctionId}` | La evaluación de una subasta (elegible o no, nota, puntaje, factores, si es verde y con qué certificado) y el estado de su entrega a Investment |
+| GET | `/api/v1/risk-assessments/{auctionId}` | La evaluación de una subasta (elegible o no, nota, puntaje, factores, si es verde y con qué certificado) y el estado de su entrega a Investment. Interna |
+| GET | `/api/v1/mype/risk-assessments/{auctionId}` | La misma evaluación para la MYPE dueña de la factura: elegible o no, nota, puntaje, cada factor con sus puntos y el motivo del rechazo, sin datos de entrega. Pide `X-User-Id` (401 sin ella) y responde 404 si la subasta es de otra MYPE |
 | GET | `/health` | Vivo |
 | GET | `/health/ready` | Listo: base de datos, consumidores, repartidor y relay arriba (503 si no) |
 
-No se rutea por el gateway todavía.
+El gateway solo expone `/risk/api/v1/mype/**`, protegido con JWT, que pone `X-User-Id`. El resto no se rutea.
 
 ## Variables de entorno
 

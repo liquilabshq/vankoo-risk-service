@@ -290,6 +290,21 @@ class RiskAssessmentApplicationService:
             raise RiskAssessmentNotFoundError(auction_id)
         return assessment
 
+    async def get_mype_risk_assessment(self, auction_id: str, mype_id: str) -> RiskAssessment:
+        """Return the assessment of one auction, for the MYPE that sells its invoice.
+
+        Another MYPE's auction reads exactly like one that was never assessed, so
+        the API does not confirm that the id exists.
+
+        Raises:
+            RiskAssessmentNotFoundError: If the auction was never assessed, or is another MYPE's.
+            DomainError: If the auction id is blank or too long.
+        """
+        assessment = await self.get_risk_assessment_by_auction_id(auction_id)
+        if assessment.facts.mype_id != mype_id:
+            raise RiskAssessmentNotFoundError(auction_id)
+        return assessment
+
     @staticmethod
     def _currency(code: str) -> Currency:
         try:

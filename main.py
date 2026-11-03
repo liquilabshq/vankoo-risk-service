@@ -27,6 +27,7 @@ from assessments.application.services import RiskAssessmentApplicationService
 from assessments.infrastructure.settings import investment_settings
 from assessments.interfaces.consumers import AuctionLifecycleConsumer
 from assessments.interfaces.dependencies import build_news_screener, build_risk_assessment_service
+from assessments.interfaces.routes import mype_router as assessments_mype_router
 from assessments.interfaces.routes import router as assessments_router
 from assessments.interfaces.workers import EvaluationDeliveryWorker
 from registries.infrastructure.settings import registry_settings
@@ -176,3 +177,4 @@ app = FastAPI(
 register_exception_handlers(app)
 app.include_router(health_router)
 app.include_router(assessments_router)
+app.include_router(assessments_mype_router)
