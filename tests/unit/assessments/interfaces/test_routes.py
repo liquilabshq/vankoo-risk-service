@@ -53,6 +53,60 @@ async def test_an_unknown_auction_is_404(sut: ServiceUnderTest, client: httpx.As
     assert response.json() == {"detail": "No risk assessment exists for auction missing"}
 
 
+MYPE = "40000000-0000-4000-8000-000000000001"
+AUCTION = "20000000-0000-4000-8000-000000000001"
+
+
+async def test_the_mype_reads_the_assessment_of_its_own_auction(
+    sut: ServiceUnderTest, client: httpx.AsyncClient
+) -> None:
+    await sut.service.assess_auction(**auction_created())
+
+    response = await client.get(f"/api/v1/mype/risk-assessments/{AUCTION}", headers={"X-User-Id": MYPE})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["risk_grade"] == "B"
+    assert body["score"] == 60
+    assert {factor["code"]: factor["points"] for factor in body["factors"]}["DOMICILE_FOUND"] == 10
+    assert all(factor["detail"] for factor in body["factors"])
+    assert body["payer_ruc"]
+    # Only the decision: the delivery bookkeeping and the inputs Investment sent stay internal.
+    assert set(body) == {
+        "auction_id",
+        "invoice_id",
+        "payer_ruc",
+        "payer_name",
+        "eligible",
+        "risk_grade",
+        "score",
+        "factors",
+        "rejection_code",
+        "rejection_reason",
+        "provisional",
+        "assessed_at",
+    }
+
+
+async def test_another_mypes_assessment_reads_as_not_found(sut: ServiceUnderTest, client: httpx.AsyncClient) -> None:
+    await sut.service.assess_auction(**auction_created())
+
+    response = await client.get(
+        f"/api/v1/mype/risk-assessments/{AUCTION}", headers={"X-User-Id": "40000000-0000-4000-8000-000000000999"}
+    )
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": f"No risk assessment exists for auction {AUCTION}"}
+
+
+async def test_the_mype_route_needs_the_gateway_header(sut: ServiceUnderTest, client: httpx.AsyncClient) -> None:
+    await sut.service.assess_auction(**auction_created())
+
+    response = await client.get(f"/api/v1/mype/risk-assessments/{AUCTION}")
+
+    assert response.status_code == 401
+
+
 async def test_liveness_answers_without_dependencies(client: httpx.AsyncClient) -> None:
     response = await client.get("/health")
     assert response.status_code == 200
