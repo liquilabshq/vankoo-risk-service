@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "ddd-fastapi": {
+      "source": "salimramirez/agent-skills",
+      "sourceType": "github",
+      "skillPath": "skills/ddd-fastapi/SKILL.md",
+      "computedHash": "8346120067e35ee9906d4299d26e4711be2e2b0283972b53993046a4ba97197c"
+    }
+  }
+}
